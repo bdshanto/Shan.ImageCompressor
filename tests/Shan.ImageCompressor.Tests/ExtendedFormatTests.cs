@@ -249,9 +249,12 @@ public class ExtendedFormatTests
     [Fact]
     public void Unsupported_Input_Throws_UnsupportedImageException_With_The_Format()
     {
-        var webp = new byte[200];
+        var webp = new byte[200]; // a WebP container flagged as animated: recognised, but not something this library decodes
         "RIFF"u8.CopyTo(webp);
-        "WEBP"u8.CopyTo(webp.AsSpan(8));
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(webp.AsSpan(4), 192);
+        "WEBPVP8X"u8.CopyTo(webp.AsSpan(8));
+        webp[16] = 10;
+        webp[20] = 0x02;
         var ex = Assert.Throws<UnsupportedImageException>(() => ImageCompressor.Compress(webp, new ImageCompressionOptions { TargetSizeBytes = 1 }));
         Assert.Equal(ImageFormat.WebP, ex.Format);
     }

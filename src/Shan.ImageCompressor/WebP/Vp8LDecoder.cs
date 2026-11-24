@@ -43,15 +43,7 @@ internal static class Vp8LDecoder
         if (bits.Read(3) != 0) throw new NotSupportedException("This lossless WebP version is not supported.");
         if ((long)width * height > maxPixels) throw new InvalidDataException($"The image has {(long)width * height} pixels, over the {maxPixels} limit.");
 
-        var pixels = DecodeImage(bits, width, height, topLevel: true, out var transforms);
-        var xsize = width;
-        // transforms were read in order; undo them in reverse (a colour-indexing transform narrowed the width the later ones saw)
-        for (var t = transforms.Count - 1; t >= 0; t--)
-        {
-            var transform = transforms[t];
-            pixels = transform.Inverse(pixels, transform.Width, height);
-            xsize = transform.OutputWidth;
-        }
+        var pixels = DecodeStream(bits, width, height);
 
         var image = RgbaImage.Create(width, height);
         var rgba = image.Pixels;
@@ -64,6 +56,28 @@ internal static class Vp8LDecoder
             rgba[i * 4 + 3] = alphaUsed ? (byte)(argb >> 24) : (byte)255;
         }
         return image;
+    }
+
+    /// <summary>
+    /// The alpha plane of a lossy WebP: a lossless stream with no header (the size comes from the image), whose green channel is the
+    /// alpha value. Returns width × height alpha bytes.
+    /// </summary>
+    public static byte[] DecodeAlpha(ReadOnlySpan<byte> data, int width, int height)
+    {
+        var pixels = DecodeStream(new BitReader(data), width, height);
+        var alpha = new byte[pixels.Length];
+        for (var i = 0; i < alpha.Length; i++) alpha[i] = (byte)(pixels[i] >> 8);
+        return alpha;
+    }
+
+    /// <summary>The transforms and entropy-coded pixels of one lossless image, with the transforms already undone.</summary>
+    private static uint[] DecodeStream(BitReader bits, int width, int height)
+    {
+        var pixels = DecodeImage(bits, width, height, topLevel: true, out var transforms);
+        // transforms were read in order; undo them in reverse (a colour-indexing transform narrowed the width the later ones saw)
+        for (var t = transforms.Count - 1; t >= 0; t--)
+            pixels = transforms[t].Inverse(pixels, transforms[t].Width, height);
+        return pixels;
     }
 
     // ---------------------------------------------------------------------------------------------------------------------------------
@@ -241,7 +255,7 @@ internal static class Vp8LDecoder
                 lengths[second] = 1;
             }
             if (first >= alphabetSize) throw new InvalidDataException("A WebP prefix code symbol is out of range.");
-            return HuffmanCode.Build(lengths);
+            return bits.Charge(HuffmanCode.Build(lengths));
         }
 
         var codeLengthLengths = new int[19];
@@ -280,7 +294,7 @@ internal static class Vp8LDecoder
             var value = usePrevious ? previous : 0;
             for (var i = 0; i < repeat; i++) lengths[symbol++] = value;
         }
-        return HuffmanCode.Build(lengths);
+        return bits.Charge(HuffmanCode.Build(lengths));
     }
 
     /// <summary>A canonical prefix code, read most-significant code bit first, decoded through a table indexed by the next bits of the stream.</summary>
@@ -291,6 +305,9 @@ internal static class Vp8LDecoder
         private readonly int _tableBits;
 
         private HuffmanCode(int single) => _single = single;
+
+        /// <summary>How many table entries this code occupies, for the decoder's memory budget.</summary>
+        public int TableSize => _table.Length;
 
         private HuffmanCode(ushort[] table, int tableBits)
         {
@@ -361,6 +378,17 @@ internal static class Vp8LDecoder
 
     private sealed class BitReader(ReadOnlySpan<byte> data)
     {
+        // Many prefix-code groups, each with a big table, could otherwise turn a small file into gigabytes of tables.
+        private const long MaxTableEntries = 64L * 1024 * 1024;
+        private long _tableEntries;
+
+        public HuffmanCode Charge(HuffmanCode code)
+        {
+            _tableEntries += code.TableSize;
+            if (_tableEntries > MaxTableEntries) throw new InvalidDataException("The WebP prefix codes are too large.");
+            return code;
+        }
+
         private readonly byte[] _data = data.ToArray();
         private int _position;
         private ulong _buffer;
