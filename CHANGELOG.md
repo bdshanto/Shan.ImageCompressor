@@ -8,6 +8,10 @@ All notable changes are documented here. Format follows [Keep a Changelog](https
 
 - `ImageCompressor` now throws `InvalidImageException` (corrupt, truncated, over `MaxPixels`, not an image) and `UnsupportedImageException` (recognised but not decodable), both deriving from the new `ImageCompressionException` and carrying the detected `Format`. They replace `InvalidDataException` and `NotSupportedException`, which `InvalidDataException` being sealed made impossible to subclass. Catch `ImageCompressionException` (or the two new types) instead.
 
+### Fixed
+
+- `MinWidth` is now a true floor: the last shrink step lands exactly on it instead of stepping past it (1600 → 1280 → 1024 → 819 with `MinWidth = 1000`).
+
 ### Added
 
 - Input formats: **TIFF** (classic, first image: 1–16-bit gray/palette/RGB(A)/CMYK; uncompressed, PackBits, LZW, Deflate; predictor; both byte orders; orientation; ICC), **TGA**, **PNM** (PBM/PGM/PPM, ASCII and binary), **QOI**, and **CMYK/YCCK JPEG**.

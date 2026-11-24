@@ -20,6 +20,56 @@ await result.Content.CopyToAsync(output);
 
 There is a synchronous version too, for code that isn't async: `ImageCompressor.Compress(stream, options)` or `ImageCompressor.Compress(bytes, options)`. Unusable options (a `ShrinkFactor` of 1, a `MinWidth` of 0, …) throw `ArgumentOutOfRangeException` before any work is done.
 
+## Examples
+
+A runnable tour of every feature lives in [`samples/Shan.ImageCompressor.Examples`](samples/Shan.ImageCompressor.Examples/Program.cs):
+
+```
+dotnet run --project samples/Shan.ImageCompressor.Examples            # builds a test picture in memory
+dotnet run --project samples/Shan.ImageCompressor.Examples photo.jpg  # or use your own (shows metadata and colour too)
+```
+
+### Resizing
+
+There is no "resize to W×H" call. The library shrinks an image only as far as it needs to for the file to fit `TargetSizeBytes`, and you steer how:
+
+```csharp
+// Fit in 150 KB, but never go below 1000 px wide, and shrink gently (5 % per step) so detail is lost slowly.
+var result = ImageCompressor.Compress(bytes, new ImageCompressionOptions
+{
+    TargetSizeBytes = 150 * 1024,
+    MinWidth = 1000,      // the width lands exactly on this, never under it
+    ShrinkFactor = 0.95,  // each step multiplies both dimensions by this
+    MinQuality = 75,      // JPEG quality stops stepping down here; after that, only pixels are removed
+});
+```
+
+Order of events per pass: JPEG quality steps down by 10 from `InitialQuality` to `MinQuality`, and only then do dimensions shrink by `ShrinkFactor`. Set `MinQuality = InitialQuality` to keep quality fixed and resize instead. Transparent (PNG) output can only resize, since PNG is lossless.
+
+### The other features in a few lines
+
+```csharp
+using Shan.ImageCompressor;
+
+// Stream, byte[] or async - same behaviour
+var a = ImageCompressor.Compress(bytes);
+var b = await ImageCompressor.CompressAsync(stream, options, cancellationToken);
+
+// What is this really? (from the bytes, not the file name or content type)
+ImageFormat format = ImageCompressor.DetectFormat(bytes);
+
+// Output and metadata
+new ImageCompressionOptions { Output = OutputFormat.Png, KeepMetadata = true, ConvertToSrgb = false };
+
+// One core per call on a busy server (output is identical)
+new ImageCompressionOptions { MaxDegreeOfParallelism = 1 };
+
+// Errors: a result or one of two exceptions
+try { ImageCompressor.Compress(bytes); }
+catch (InvalidImageException e)     { /* corrupt, truncated, not an image, over MaxPixels; e.Format says what it looked like */ }
+catch (UnsupportedImageException e) { /* WebP, animated GIF, ... - keep the original */ }
+```
+
 ## What it can read
 
 | Format | Detect | Compress |
