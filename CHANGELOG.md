@@ -2,6 +2,19 @@
 
 All notable changes are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/), versioning follows SemVer.
 
+## [2.0.0] - 2026-11-24
+
+### Breaking
+
+- `ImageCompressor` now throws `InvalidImageException` (corrupt, truncated, over `MaxPixels`, not an image) and `UnsupportedImageException` (recognised but not decodable), both deriving from the new `ImageCompressionException` and carrying the detected `Format`. They replace `InvalidDataException` and `NotSupportedException`, which `InvalidDataException` being sealed made impossible to subclass. Catch `ImageCompressionException` (or the two new types) instead.
+
+### Added
+
+- Input formats: **TIFF** (classic, first image: 1–16-bit gray/palette/RGB(A)/CMYK; uncompressed, PackBits, LZW, Deflate; predictor; both byte orders; orientation; ICC), **TGA**, **PNM** (PBM/PGM/PPM, ASCII and binary), **QOI**, and **CMYK/YCCK JPEG**.
+- `ImageCompressionOptions.Output` (`Auto`/`Jpeg`/`Png`) to choose the output format; forcing JPEG flattens transparency onto white.
+- `ImageCompressionOptions.KeepMetadata` (default false) carries EXIF — orientation reset, since the pixels are rotated upright — and the ICC profile to JPEG and PNG output.
+- `ImageCompressionOptions.ConvertToSrgb` (default true): pixels from an embedded RGB matrix/TRC ICC profile are converted to sRGB before the profile is dropped, so Adobe RGB / Display P3 photos no longer look dull. Verified against LittleCMS.
+
 ## [1.1.0] - 2026-11-24
 
 ### Added
