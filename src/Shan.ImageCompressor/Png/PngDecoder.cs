@@ -28,7 +28,7 @@ internal sealed class PngDecoder
     public static RgbaImage Decode(byte[] data, long maxPixels)
     {
         try { return new PngDecoder().DecodeCore(data, maxPixels); }
-        catch (Exception e) when (e is IndexOutOfRangeException or ArgumentException or OverflowException or EndOfStreamException)
+        catch (Exception e) when (e is IndexOutOfRangeException or ArgumentException or OverflowException or EndOfStreamException or IOException)
         {
             throw new InvalidDataException("The PNG data is corrupt.", e);
         }
