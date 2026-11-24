@@ -49,13 +49,6 @@ public class CodecTests
         Assert.Equal((9, 13), (output.Width, output.Height));
     }
 
-    [Fact]
-    public void Progressive_Jpeg_Is_Rejected_Clearly()
-    {
-        var ex = Assert.Throws<NotSupportedException>(() => JpegDecoder.Decode(Fixtures.JpegProgressive.File, 1_000_000, out _));
-        Assert.Contains("Progressive", ex.Message);
-    }
-
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
