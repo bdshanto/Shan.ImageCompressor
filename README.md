@@ -1,6 +1,6 @@
 # Shan.ImageCompressor
 
-Compress JPEG and PNG images toward a target file size. **No dependencies** — the PNG and JPEG codecs are part of the package, so there is no third-party imaging library (and no third-party licence) to worry about.
+Compress JPEG, PNG, GIF and BMP images toward a target file size. **No dependencies** — the image codecs are part of the package, so there is no third-party imaging library (and no third-party licence) to worry about.
 
 - Detects the real format from the bytes, not the client-claimed content type
 - Opaque images become JPEG (quality stepped down, then dimensions); images with real transparency stay PNG
@@ -18,15 +18,19 @@ await using var output = File.Create("photo" + result.Extension);
 await result.Content.CopyToAsync(output);
 ```
 
+There is a synchronous version too, for code that isn't async: `ImageCompressor.Compress(stream, options)` or `ImageCompressor.Compress(bytes, options)`. Unusable options (a `ShrinkFactor` of 1, a `MinWidth` of 0, …) throw `ArgumentOutOfRangeException` before any work is done.
+
 ## What it can read
 
 | Format | Detect | Compress |
 |---|---|---|
 | PNG | yes | yes — every colour type and bit depth, Adam7 interlacing, tRNS transparency |
-| JPEG | yes | baseline / extended-sequential, 8-bit, grayscale or YCbCr/RGB, any chroma subsampling, restart intervals |
-| GIF, BMP, WebP | yes | no |
+| JPEG | yes | baseline, extended-sequential and **progressive**, 8-bit, grayscale or YCbCr/RGB, any chroma subsampling, restart intervals |
+| GIF | yes | yes — the first frame, with interlacing and the transparent colour; an **animated** GIF is not flattened (see below) |
+| BMP | yes | yes — 1/4/8-bit palette, 16/24/32-bit, bit masks (incl. alpha), RLE4/RLE8, top-down or bottom-up |
+| WebP | yes | no |
 
-An image that is already small enough is returned as-is whatever its format. One that needs compressing but isn't a supported kind throws `NotSupportedException` (**progressive JPEGs, CMYK JPEGs, WebP, GIF, BMP**); a corrupt or non-image stream throws `InvalidDataException`.
+An image that is already small enough is returned as-is whatever its format. One that needs compressing but isn't a supported kind throws `NotSupportedException` (**WebP, animated GIF, CMYK or arithmetic-coded JPEG**); a corrupt or non-image stream throws `InvalidDataException` — and nothing else, however damaged the bytes are. An animated GIF is rejected rather than squashed into a still, so a caller can keep the original, as with any other unsupported file.
 
 Output is always JPEG (baseline, 4:2:0 chroma below quality 90, 4:4:4 from 90 up) or PNG (8-bit RGB/RGBA). Compare against libjpeg at the same quality: file sizes land within about 2%.
 
