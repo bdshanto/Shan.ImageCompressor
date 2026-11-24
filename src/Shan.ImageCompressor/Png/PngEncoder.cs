@@ -6,7 +6,7 @@ namespace Shan.ImageCompressor.Png;
 /// <summary>Writes an 8-bit PNG: RGB when the image is fully opaque, RGBA otherwise, each scanline using its cheapest filter.</summary>
 internal static class PngEncoder
 {
-    public static MemoryStream Encode(RgbaImage image)
+    public static MemoryStream Encode(RgbaImage image, ImageMetadata? metadata = null)
     {
         var alpha = image.HasTransparency();
         var channels = alpha ? 4 : 3;
@@ -65,6 +65,14 @@ internal static class PngEncoder
         header[10] = header[11] = header[12] = 0;
 
         WriteChunk(output, "IHDR"u8, header);
+        if (metadata?.IccProfile is { Length: > 0 } icc)
+        {
+            using var profile = new MemoryStream();
+            profile.Write("ICC profile\0\0"u8); // the profile's name, a NUL, then compression method 0
+            using (var z = new ZLibStream(profile, CompressionLevel.SmallestSize, leaveOpen: true)) z.Write(icc);
+            WriteChunk(output, "iCCP"u8, profile.GetBuffer().AsSpan(0, (int)profile.Length));
+        }
+        if (metadata?.Exif is { Length: > 0 } exif) WriteChunk(output, "eXIf"u8, exif);
         WriteChunk(output, "IDAT"u8, idat.GetBuffer().AsSpan(0, (int)idat.Length));
         WriteChunk(output, "IEND"u8, []);
         output.Position = 0;

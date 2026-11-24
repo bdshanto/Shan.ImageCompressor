@@ -18,7 +18,7 @@ internal static class JpegEncoder
 
     public const int MaxDimension = 65535;
 
-    public static MemoryStream Encode(RgbaImage image, int quality)
+    public static MemoryStream Encode(RgbaImage image, int quality, ImageMetadata? metadata = null)
     {
         if (image.Width > MaxDimension || image.Height > MaxDimension) throw new NotSupportedException("JPEG cannot hold an image over 65535 pixels on a side.");
         quality = Math.Clamp(quality, 1, 100);
@@ -47,7 +47,7 @@ internal static class JpegEncoder
         var acChroma = new HuffmanEncodeTable(JpegTables.AcChrominanceCounts, JpegTables.AcChrominanceValues);
 
         var output = new MemoryStream();
-        WriteHeaders(output, image.Width, image.Height, subsample, lumaQuant, chromaQuant);
+        WriteHeaders(output, image.Width, image.Height, subsample, lumaQuant, chromaQuant, metadata);
 
         var bits = new JpegBitWriter(output);
         var block = new float[64];
@@ -136,10 +136,11 @@ internal static class JpegEncoder
         return inverse;
     }
 
-    private static void WriteHeaders(MemoryStream o, int width, int height, bool subsample, int[] lumaQuant, int[] chromaQuant)
+    private static void WriteHeaders(MemoryStream o, int width, int height, bool subsample, int[] lumaQuant, int[] chromaQuant, ImageMetadata? metadata)
     {
         o.Write([0xFF, 0xD8]);
         o.Write([0xFF, 0xE0, 0, 16, (byte)'J', (byte)'F', (byte)'I', (byte)'F', 0, 1, 1, 0, 0, 1, 0, 1, 0, 0]);
+        WriteMetadata(o, metadata);
 
         o.Write([0xFF, 0xDB, 0, 132]);
         foreach (var (id, table) in new[] { (0, lumaQuant), (1, chromaQuant) })
@@ -161,6 +162,37 @@ internal static class JpegEncoder
         WriteHuffman(o, 0x11, JpegTables.AcChrominanceCounts, JpegTables.AcChrominanceValues);
 
         o.Write([0xFF, 0xDA, 0, 12, 3, 1, 0x00, 2, 0x11, 3, 0x11, 0, 63, 0]);
+    }
+
+    /// <summary>EXIF (APP1) and ICC profile (APP2, split into 64 KB chunks) segments. An EXIF block too big for one segment is dropped.</summary>
+    private static void WriteMetadata(MemoryStream o, ImageMetadata? metadata)
+    {
+        if (metadata == null) return;
+
+        if (metadata.Exif is { Length: > 0 } exif && exif.Length <= 65535 - 2 - 6)
+        {
+            var length = exif.Length + 6 + 2;
+            o.Write([0xFF, 0xE1, (byte)(length >> 8), (byte)length]);
+            o.Write("Exif\0\0"u8);
+            o.Write(exif);
+        }
+
+        if (metadata.IccProfile is { Length: > 0 } icc)
+        {
+            const int chunkSize = 65535 - 2 - 14;
+            var chunks = (icc.Length + chunkSize - 1) / chunkSize;
+            if (chunks > 255) return;
+            for (var i = 0; i < chunks; i++)
+            {
+                var part = icc.AsSpan(i * chunkSize, Math.Min(chunkSize, icc.Length - i * chunkSize));
+                var length = part.Length + 14 + 2;
+                o.Write([0xFF, 0xE2, (byte)(length >> 8), (byte)length]);
+                o.Write("ICC_PROFILE\0"u8);
+                o.WriteByte((byte)(i + 1));
+                o.WriteByte((byte)chunks);
+                o.Write(part);
+            }
+        }
     }
 
     private static void WriteHuffman(MemoryStream o, byte classAndId, byte[] counts, byte[] values)

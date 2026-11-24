@@ -48,6 +48,9 @@ internal sealed class JpegDecoder
     private bool _orientationRead;
     private int _pos;
     private bool _progressive;
+    private byte[]? _exif;
+    private readonly SortedDictionary<int, byte[]> _iccChunks = [];
+    private int _iccChunkCount;
     private int _eobrun;
 
     private JpegDecoder(byte[] data, long maxPixels)
@@ -103,6 +106,14 @@ internal sealed class JpegDecoder
                 case 0xDD: _restartInterval = BinaryPrimitives.ReadUInt16BigEndian(body); break;
                 case 0xE1:
                     if (!_orientationRead) { _orientation = ExifOrientation.Read(body); _orientationRead = true; }
+                    if (_exif == null && body.Length > 14 && body[..6].SequenceEqual("Exif\0\0"u8)) _exif = body[6..].ToArray();
+                    break;
+                case 0xE2:
+                    if (body.Length > 14 && body[..12].SequenceEqual("ICC_PROFILE\0"u8) && body[12] >= 1 && body[12] <= body[13])
+                    {
+                        _iccChunks[body[12]] = body[14..].ToArray();
+                        _iccChunkCount = body[13];
+                    }
                     break;
                 case 0xEE:
                     if (body.Length >= 12 && body[..5].SequenceEqual("Adobe"u8)) _adobeTransform = body[11];
@@ -117,7 +128,9 @@ internal sealed class JpegDecoder
 
         if (_components.Length == 0 || !_scanned) throw new InvalidDataException("The JPEG has no image data.");
         if (_progressive) FinalizeProgressive();
-        return BuildImage();
+        var image = BuildImage();
+        image.Metadata = BuildMetadata();
+        return image;
     }
 
     private void ReadFrame(ReadOnlySpan<byte> body, bool progressive)
@@ -131,7 +144,7 @@ internal sealed class JpegDecoder
         var count = body[5];
         if (_width == 0 || _height == 0) throw new InvalidDataException("The JPEG has invalid dimensions.");
         if ((long)_width * _height > _maxPixels) throw new InvalidDataException($"The image has {(long)_width * _height} pixels, over the {_maxPixels} limit.");
-        if (count is not (1 or 3)) throw new NotSupportedException("Only grayscale and 3-component JPEGs are supported.");
+        if (count is not (1 or 3 or 4)) throw new NotSupportedException("Only grayscale, 3-component (YCbCr/RGB) and 4-component (CMYK/YCCK) JPEGs are supported.");
         if (body.Length < 6 + count * 3) throw new InvalidDataException("The JPEG frame header is truncated.");
 
         var components = new Component[count];
@@ -492,6 +505,14 @@ internal sealed class JpegDecoder
 
     private static byte ClampByte(float v) => v <= 0 ? (byte)0 : v >= 255f ? (byte)255 : (byte)(v + 0.5f);
 
+    private ImageMetadata? BuildMetadata()
+    {
+        byte[]? icc = null;
+        if (_iccChunkCount > 0 && _iccChunks.Count == _iccChunkCount && _iccChunks.Keys.SequenceEqual(Enumerable.Range(1, _iccChunkCount)))
+            icc = _iccChunks.Values.SelectMany(c => c).ToArray();
+        return _exif == null && icc == null ? null : new ImageMetadata(_exif, icc);
+    }
+
     private RgbaImage BuildImage()
     {
         var image = RgbaImage.Create(_width, _height);
@@ -502,7 +523,8 @@ internal sealed class JpegDecoder
         for (var i = 0; i < _width * _height; i++)
         {
             var o = i * 4;
-            if (planes.Length == 1) pixels[o] = pixels[o + 1] = pixels[o + 2] = planes[0][i];
+            if (planes.Length == 4) BuildCmykPixel(pixels, o, planes, i);
+            else if (planes.Length == 1) pixels[o] = pixels[o + 1] = pixels[o + 2] = planes[0][i];
             else
             {
                 float a = planes[0][i], b = planes[1][i], c = planes[2][i];
@@ -517,6 +539,28 @@ internal sealed class JpegDecoder
             pixels[o + 3] = 255;
         }
         return image;
+    }
+
+    /// <summary>
+    /// One CMYK/YCCK pixel to RGB. Adobe writes CMYK inverted (255 = no ink), so with an Adobe marker the stored values multiply directly;
+    /// YCCK first turns its YCC triple into those stored values, as libjpeg does. Without a marker the values are plain ink amounts.
+    /// </summary>
+    private void BuildCmykPixel(byte[] pixels, int o, byte[][] planes, int i)
+    {
+        int c, m, y, k = planes[3][i];
+        if (_adobeTransform == 2)
+        {
+            float a = planes[0][i], b = planes[1][i], cr = planes[2][i];
+            c = 255 - ClampByte(a + 1.402f * (cr - 128f));
+            m = 255 - ClampByte(a - 0.344136f * (b - 128f) - 0.714136f * (cr - 128f));
+            y = 255 - ClampByte(a + 1.772f * (b - 128f));
+        }
+        else { c = planes[0][i]; m = planes[1][i]; y = planes[2][i]; }
+
+        if (_adobeTransform < 0) { c = 255 - c; m = 255 - m; y = 255 - y; k = 255 - k; } // no Adobe marker: not inverted
+        pixels[o] = (byte)(c * k / 255);
+        pixels[o + 1] = (byte)(m * k / 255);
+        pixels[o + 2] = (byte)(y * k / 255);
     }
 
     /// <summary>

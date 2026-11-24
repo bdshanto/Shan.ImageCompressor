@@ -41,6 +41,8 @@ internal sealed class PngDecoder
         var pos = 8;
         var haveHeader = false;
         byte[]? transparency = null;
+        byte[]? iccProfile = null;
+        byte[]? exif = null;
         using var idat = new MemoryStream();
 
         while (pos + 8 <= data.Length)
@@ -54,6 +56,8 @@ internal sealed class PngDecoder
             if (type.SequenceEqual("IHDR"u8)) { ReadHeader(body, maxPixels); haveHeader = true; }
             else if (type.SequenceEqual("PLTE"u8)) _palette = body.ToArray();
             else if (type.SequenceEqual("tRNS"u8)) transparency = body.ToArray();
+            else if (type.SequenceEqual("iCCP"u8)) iccProfile ??= ReadIccProfile(body);
+            else if (type.SequenceEqual("eXIf"u8)) exif ??= body.ToArray();
             else if (type.SequenceEqual("IDAT"u8)) idat.Write(body);
             else if (type.SequenceEqual("IEND"u8)) break;
 
@@ -82,7 +86,29 @@ internal sealed class PngDecoder
                 offset = Unfilter(raw, offset, image, PassX0[pass], PassY0[pass], PassDx[pass], PassDy[pass], pw, ph);
             }
         }
+        if (iccProfile != null || exif != null) image.Metadata = new ImageMetadata(exif, iccProfile);
         return image;
+    }
+
+    /// <summary>The profile from an iCCP chunk (name, NUL, method byte, zlib stream), or null if it is unreadable or implausibly large.</summary>
+    private static byte[]? ReadIccProfile(ReadOnlySpan<byte> body)
+    {
+        var nul = body.IndexOf((byte)0);
+        if (nul < 1 || nul > 79 || nul + 2 >= body.Length || body[nul + 1] != 0) return null;
+        try
+        {
+            using var z = new ZLibStream(new MemoryStream(body[(nul + 2)..].ToArray()), CompressionMode.Decompress);
+            using var output = new MemoryStream();
+            var buffer = new byte[8192];
+            int n;
+            while ((n = z.Read(buffer, 0, buffer.Length)) > 0)
+            {
+                output.Write(buffer, 0, n);
+                if (output.Length > 8 * 1024 * 1024) return null; // a hostile profile that inflates to megabytes
+            }
+            return output.ToArray();
+        }
+        catch (Exception e) when (e is IOException or InvalidDataException) { return null; }
     }
 
     private void ReadHeader(ReadOnlySpan<byte> body, long maxPixels)
