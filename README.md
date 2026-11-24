@@ -20,6 +20,27 @@ await result.Content.CopyToAsync(output);
 
 There is a synchronous version too, for code that isn't async: `ImageCompressor.Compress(stream, options)` or `ImageCompressor.Compress(bytes, options)`. Unusable options (a `ShrinkFactor` of 1, a `MinWidth` of 0, …) throw `ArgumentOutOfRangeException` before any work is done.
 
+## Why compress?
+
+Phone and camera photos are far bigger than a web page, an API upload or a database row needs. Measured with the defaults (768 KB target) and with a 300 KB target on real photos:
+
+| Input | Original | Target 768 KB | Saved | Target 300 KB | Saved |
+|---|---:|---:|---:|---:|---:|
+| Photo, JPEG | 4,906 KB | 748 KB | **84.7 %** (6.6× smaller) | 295 KB | **94.0 %** (16.6× smaller) |
+| 12 MP photo, JPEG | 2,296 KB | 667 KB | **70.9 %** (3.4× smaller) | 275 KB | **88.0 %** (8.3× smaller) |
+| 12 MP photo, progressive JPEG | 2,137 KB | 667 KB | **68.8 %** (3.2× smaller) | 275 KB | **87.1 %** (7.8× smaller) |
+| Photo, PNG | 12,054 KB | 745 KB | **93.8 %** (16.2× smaller) | 294 KB | **97.6 %** (40.9× smaller) |
+| 12 MP photo, PNG | 10,786 KB | 644 KB | **94.0 %** (16.7× smaller) | 272 KB | **97.5 %** (39.5× smaller) |
+
+What that means in practice:
+
+- Upload less: a 4.9 MB photo becomes 0.7 MB, so uploads finish about 6× sooner and the same storage holds about 6× more images.
+- A photo saved as PNG is the biggest win, because it is lossless and the library converts it to JPEG. If it has real transparency it stays PNG and is only resized.
+- The result always lands at or under the target, instead of whatever size the camera produced.
+- A file already at or under the target is returned untouched, so small images are never made worse.
+
+Your numbers will differ with the picture: noisy, detailed photos shrink less than smooth ones, and a JPEG that was already heavily compressed has less left to give. A 12 MP image takes roughly 1–2 s on a multi-core machine. Run the [examples](#examples) on your own file to see your figure.
+
 ## Examples
 
 A runnable tour of every feature lives in [`samples/Shan.ImageCompressor.Examples`](samples/Shan.ImageCompressor.Examples/Program.cs):
