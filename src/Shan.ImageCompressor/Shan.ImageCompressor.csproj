@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+
+    <PackageId>Shan.ImageCompressor</PackageId>
+    <Version>1.0.0</Version>
+    <Authors>Hasibul Islam Shanto</Authors>
+    <Description>Compress JPEG and PNG images toward a target file size with zero dependencies (own PNG and JPEG codecs): format sniffing from the bytes, EXIF auto-orient, metadata stripping, and alpha-aware JPEG/PNG output.</Description>
+    <PackageTags>image;compression;jpeg;png;resize;exif;no-dependencies</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Shan.ImageCompressor.Tests" />
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+</Project>
