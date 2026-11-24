@@ -8,6 +8,7 @@ using Shan.ImageCompressor.Processing;
 using Shan.ImageCompressor.Qoi;
 using Shan.ImageCompressor.Tga;
 using Shan.ImageCompressor.Tiff;
+using Shan.ImageCompressor.WebP;
 
 namespace Shan.ImageCompressor;
 
@@ -206,8 +207,11 @@ public static class ImageCompressor
             case ImageFormat.Qoi:
                 original = QoiDecoder.Decode(data, options.MaxPixels);
                 break;
+            case ImageFormat.WebP:
+                original = WebPDecoder.Decode(data, options.MaxPixels, out orientation);
+                break;
             default:
-                throw new NotSupportedException($"A {format} image can be detected but not compressed; only JPEG, PNG, GIF, BMP, TIFF, TGA, PNM and QOI are supported.");
+                throw new NotSupportedException($"A {format} image can be detected but not compressed; only JPEG, PNG, GIF, BMP, TIFF, TGA, PNM, QOI and still WebP are supported.");
         }
         data = [];
 
