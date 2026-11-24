@@ -1,3 +1,4 @@
 <Solution>
   <Project Path="src/Shan.ImageCompressor/Shan.ImageCompressor.csproj" />
+  <Project Path="tests/Shan.ImageCompressor.Tests/Shan.ImageCompressor.Tests.csproj" />
 </Solution>
