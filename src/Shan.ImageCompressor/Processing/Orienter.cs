@@ -16,11 +16,11 @@ internal static class Orienter
         var outH = swap ? w : h;
 
         var result = RgbaImage.Create(outW, outH);
-        var srcPixels = MemoryMarshal.Cast<byte, uint>(source.Pixels.AsSpan());
-        var dstPixels = MemoryMarshal.Cast<byte, uint>(result.Pixels.AsSpan());
 
-        for (var oy = 0; oy < outH; oy++)
+        Work.Rows(outH, oy =>
         {
+            var srcPixels = MemoryMarshal.Cast<byte, uint>(source.Pixels.AsSpan());
+            var dstPixels = MemoryMarshal.Cast<byte, uint>(result.Pixels.AsSpan());
             for (var ox = 0; ox < outW; ox++)
             {
                 var (sx, sy) = orientation switch
@@ -35,7 +35,7 @@ internal static class Orienter
                 };
                 dstPixels[oy * outW + ox] = srcPixels[sy * w + sx];
             }
-        }
+        });
         return result;
     }
 }

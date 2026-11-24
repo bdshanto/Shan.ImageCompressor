@@ -105,8 +105,10 @@ public static class ImageCompressor
     {
         if (format == ImageFormat.Unknown) throw new InvalidDataException("The stream is not a recognised image.");
 
-        if (data.Length <= options.TargetSizeBytes)
+        var small = data.Length <= options.TargetSizeBytes;
+        if (small && !options.HasEdits)
             return new CompressedImage(new MemoryStream(data), ImageFormatDetector.ContentType(format), ImageFormatDetector.Extension(format), false);
+        var untouched = small ? data : null; // a small file the edits turn out not to change goes back exactly as it came
 
         RgbaImage original;
         var orientation = 1;
@@ -153,6 +155,18 @@ public static class ImageCompressor
         var exifOrientation = orientation;
         original = Orienter.Apply(original, exifOrientation);
 
+        var edited = false;
+        if (options.Crop is { } crop)
+        {
+            original = Editor.Crop(original, crop);
+            edited = true;
+        }
+        if (options.Rotate != Rotation.None || options.FlipHorizontal || options.FlipVertical)
+        {
+            original = Editor.Transform(original, options.Rotate, options.FlipHorizontal, options.FlipVertical);
+            edited = true;
+        }
+
         var keepAlpha = options.Output switch
         {
             OutputFormat.Png => true,
@@ -163,6 +177,15 @@ public static class ImageCompressor
         var quality = options.InitialQuality;
         var width = original.Width;
         var height = original.Height;
+        var box = Math.Min(options.MaxWidth > 0 ? (double)options.MaxWidth / width : 1, options.MaxHeight > 0 ? (double)options.MaxHeight / height : 1);
+        if (box < 1)
+        {
+            width = Math.Min(options.MaxWidth > 0 ? options.MaxWidth : int.MaxValue, Math.Max(1, (int)Math.Round(width * box)));
+            height = Math.Min(options.MaxHeight > 0 ? options.MaxHeight : int.MaxValue, Math.Max(1, (int)Math.Round(height * box)));
+            edited = true;
+        }
+        if (untouched != null && !edited)
+            return new CompressedImage(new MemoryStream(untouched), ImageFormatDetector.ContentType(format), ImageFormatDetector.Extension(format), false);
         if (!keepAlpha && Math.Max(width, height) > JpegEncoder.MaxDimension)
         {
             var fit = (double)JpegEncoder.MaxDimension / Math.Max(width, height);
@@ -173,7 +196,7 @@ public static class ImageCompressor
         for (var pass = 1; ; pass++)
         {
             ct.ThrowIfCancellationRequested();
-            var current = Resizer.Shrink(original, width, height);
+            var current = Resizer.Shrink(original, width, height, options.Filter);
             var output = keepAlpha ? PngEncoder.Encode(current, metadata) : JpegEncoder.Encode(current, quality, metadata);
 
             var smallest = keepAlpha ? width <= options.MinWidth : quality <= options.MinQuality && width <= options.MinWidth;
