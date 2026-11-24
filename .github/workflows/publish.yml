@@ -36,12 +36,12 @@ jobs:
       - run: dotnet pack src/Shan.ImageCompressor -c Release -o artifacts -p:ContinuousIntegrationBuild=true
 
       # Trusted Publishing: no long-lived API key. `user` is the nuget.org profile name (not the email) that owns the
-      # trusted-publishing policy; set it as the NUGET_USERNAME (or NUGET_USER) repository variable (Settings > Secrets and variables > Actions > Variables).
+      # trusted-publishing policy; set it as the NUGET_USERNAME (or NUGET_USER) repository secret (Settings > Secrets and variables > Actions > Secrets).
       - name: Get a short-lived nuget.org API key
         id: login
         uses: NuGet/login@v1
         with:
-          user: ${{ vars.NUGET_USERNAME || vars.NUGET_USER }}
+          user: ${{ secrets.NUGET_USERNAME || secrets.NUGET_USER }}
 
       - name: Push to nuget.org
         env:
