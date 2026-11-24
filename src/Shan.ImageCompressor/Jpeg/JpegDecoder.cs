@@ -3,8 +3,8 @@ using System.Buffers.Binary;
 namespace Shan.ImageCompressor.Jpeg;
 
 /// <summary>
-/// Decodes baseline / extended-sequential, 8-bit, Huffman-coded JPEGs (grayscale or 3-component YCbCr/RGB, any chroma subsampling,
-/// restart intervals, interleaved or per-component scans). Progressive, lossless, arithmetic-coded and CMYK files are rejected.
+/// Decodes baseline, extended-sequential and progressive, 8-bit, Huffman-coded JPEGs (grayscale or 3-component YCbCr/RGB, any chroma
+/// subsampling, restart intervals, interleaved or per-component scans). Lossless, arithmetic-coded and CMYK files are rejected.
 /// </summary>
 internal sealed class JpegDecoder
 {
@@ -19,6 +19,8 @@ internal sealed class JpegDecoder
         public int Width;           // actual sample width of this component
         public int Height;
         public byte[] Plane = [];
+        public short[] Coeffs = []; // progressive only: every block's coefficients, natural order, filled in scan by scan
+        public int[]? Quant;        // progressive only: the table in force when the component's first scan arrived
         public int PlaneWidth;
         public int DcTable;
         public int AcTable;
@@ -45,6 +47,8 @@ internal sealed class JpegDecoder
     private int _orientation = 1;
     private bool _orientationRead;
     private int _pos;
+    private bool _progressive;
+    private int _eobrun;
 
     private JpegDecoder(byte[] data, long maxPixels)
     {
@@ -90,8 +94,8 @@ internal sealed class JpegDecoder
 
             switch (marker)
             {
-                case 0xC0 or 0xC1: ReadFrame(body); break;
-                case 0xC2: throw new NotSupportedException("Progressive JPEGs are not supported.");
+                case 0xC0 or 0xC1: ReadFrame(body, false); break;
+                case 0xC2: ReadFrame(body, true); break;
                 case 0xC3 or 0xC5 or 0xC6 or 0xC7 or 0xC9 or 0xCA or 0xCB or 0xCD or 0xCE or 0xCF:
                     throw new NotSupportedException("This JPEG coding process (lossless, hierarchical or arithmetic) is not supported.");
                 case 0xC4: ReadHuffmanTables(body); break;
@@ -112,10 +116,11 @@ internal sealed class JpegDecoder
         }
 
         if (_components.Length == 0 || !_scanned) throw new InvalidDataException("The JPEG has no image data.");
+        if (_progressive) FinalizeProgressive();
         return BuildImage();
     }
 
-    private void ReadFrame(ReadOnlySpan<byte> body)
+    private void ReadFrame(ReadOnlySpan<byte> body, bool progressive)
     {
         if (_components.Length != 0) throw new InvalidDataException("The JPEG has more than one frame.");
         if (body.Length < 6) throw new InvalidDataException("The JPEG frame header is truncated.");
@@ -137,6 +142,7 @@ internal sealed class JpegDecoder
             components[i] = c;
         }
 
+        _progressive = progressive;
         _hMax = components.Max(c => c.H);
         _vMax = components.Max(c => c.V);
         _mcusX = (_width + 8 * _hMax - 1) / (8 * _hMax);
@@ -149,7 +155,8 @@ internal sealed class JpegDecoder
             c.Width = (_width * c.H + _hMax - 1) / _hMax;
             c.Height = (_height * c.V + _vMax - 1) / _vMax;
             c.PlaneWidth = c.BlocksPerLine * 8;
-            c.Plane = new byte[checked(c.PlaneWidth * c.BlocksPerColumn * 8)];
+            if (progressive) c.Coeffs = new short[checked(c.BlocksPerLine * c.BlocksPerColumn * 64)];
+            else c.Plane = new byte[checked(c.PlaneWidth * c.BlocksPerColumn * 8)];
         }
         _components = components;
     }
@@ -209,8 +216,22 @@ internal sealed class JpegDecoder
             scan[i] = c;
         }
 
+        int ss = 0, se = 63, ah = 0, al = 0;
+        if (_progressive)
+        {
+            if (header.Length < 1 + count * 2 + 3) throw new InvalidDataException("The JPEG scan header is invalid.");
+            ss = header[1 + count * 2];
+            se = header[2 + count * 2];
+            ah = header[3 + count * 2] >> 4;
+            al = header[3 + count * 2] & 15;
+            var validBand = ss == 0 ? se == 0 : se >= ss && se <= 63 && count == 1;
+            if (!validBand || al > 13) throw new InvalidDataException("The JPEG progressive scan parameters are invalid.");
+            foreach (var c in scan) c.Quant ??= _quant[c.QuantIndex];
+        }
+
         var reader = new JpegBitReader(_data, _pos);
         var coefficients = new int[64];
+        _eobrun = 0;
         foreach (var c in scan) c.Pred = 0;
 
         int totalMcus, blocksAcross = 0;
@@ -226,11 +247,17 @@ internal sealed class JpegDecoder
             if (_restartInterval > 0 && mcu > 0 && mcu % _restartInterval == 0)
             {
                 reader.Restart();
+                _eobrun = 0;
                 foreach (var c in scan) c.Pred = 0;
             }
 
             if (count == 1)
-                DecodeBlock(reader, scan[0], mcu % blocksAcross, mcu / blocksAcross, coefficients);
+            {
+                var bx = mcu % blocksAcross;
+                var by = mcu / blocksAcross;
+                if (_progressive) DecodeProgressiveBlock(reader, scan[0], bx, by, ss, se, ah, al);
+                else DecodeBlock(reader, scan[0], bx, by, coefficients);
+            }
             else
             {
                 var mx = mcu % _mcusX;
@@ -238,7 +265,10 @@ internal sealed class JpegDecoder
                 foreach (var c in scan)
                     for (var v = 0; v < c.V; v++)
                         for (var h = 0; h < c.H; h++)
-                            DecodeBlock(reader, c, mx * c.H + h, my * c.V + v, coefficients);
+                        {
+                            if (_progressive) DecodeProgressiveBlock(reader, c, mx * c.H + h, my * c.V + v, ss, se, ah, al);
+                            else DecodeBlock(reader, c, mx * c.H + h, my * c.V + v, coefficients);
+                        }
             }
         }
 
@@ -276,6 +306,143 @@ internal sealed class JpegDecoder
         }
 
         Idct(coefficients, acPresent, c.Plane, c.PlaneWidth, blockX * 8, blockY * 8);
+    }
+
+    /// <summary>One block of one progressive scan: a DC first/refinement pass or an AC first/refinement pass over the band ss..se (ITU T.81 G.1.2).</summary>
+    private void DecodeProgressiveBlock(JpegBitReader reader, Component c, int blockX, int blockY, int ss, int se, int ah, int al)
+    {
+        var coefs = c.Coeffs;
+        var offset = (blockY * c.BlocksPerLine + blockX) * 64;
+
+        if (ss == 0)
+        {
+            if (ah == 0)
+            {
+                var dc = _dc[c.DcTable] ?? throw new InvalidDataException("The JPEG is missing a Huffman table.");
+                c.Pred += reader.ReceiveExtend(reader.Decode(dc));
+                coefs[offset] = (short)(c.Pred << al);
+            }
+            else if (reader.ReadBit() != 0) coefs[offset] |= (short)(1 << al);
+            return;
+        }
+
+        var ac = _ac[c.AcTable] ?? throw new InvalidDataException("The JPEG is missing a Huffman table.");
+        if (ah == 0) DecodeAcFirst(reader, ac, coefs, offset, ss, se, al);
+        else DecodeAcRefine(reader, ac, coefs, offset, ss, se, al);
+    }
+
+    private void DecodeAcFirst(JpegBitReader reader, JpegHuffmanTable ac, short[] coefs, int offset, int ss, int se, int al)
+    {
+        if (_eobrun > 0)
+        {
+            _eobrun--;
+            return;
+        }
+
+        for (var k = ss; k <= se; k++)
+        {
+            var rs = reader.Decode(ac);
+            var run = rs >> 4;
+            var size = rs & 15;
+            if (size == 0)
+            {
+                if (run < 15)
+                {
+                    _eobrun = (1 << run) - 1; // this block is the first of the run
+                    if (run > 0) _eobrun += reader.ReadBits(run);
+                    break;
+                }
+                k += 15; // ZRL: sixteen zeros, the loop's own increment adds the last one
+                continue;
+            }
+            k += run;
+            if (k > 63) throw new InvalidDataException("The JPEG has a corrupt coefficient run.");
+            coefs[offset + JpegTables.Zigzag[k]] = (short)(reader.ReceiveExtend(size) * (1 << al));
+        }
+    }
+
+    /// <summary>Adds one more bit of precision: nudges the coefficients already known and slots in the newly non-zero ones.</summary>
+    private void DecodeAcRefine(JpegBitReader reader, JpegHuffmanTable ac, short[] coefs, int offset, int ss, int se, int al)
+    {
+        var p1 = 1 << al;
+        var m1 = -1 << al;
+        var k = ss;
+
+        if (_eobrun == 0)
+        {
+            for (; k <= se; k++)
+            {
+                var rs = reader.Decode(ac);
+                var run = rs >> 4;
+                var value = 0;
+                if ((rs & 15) != 0) value = reader.ReadBit() != 0 ? p1 : m1;
+                else if (run != 15)
+                {
+                    _eobrun = 1 << run;
+                    if (run > 0) _eobrun += reader.ReadBits(run);
+                    break;
+                }
+
+                while (k <= se) // step over `run` zero coefficients, correcting each non-zero one passed on the way
+                {
+                    ref var coef = ref coefs[offset + JpegTables.Zigzag[k]];
+                    if (coef != 0) RefineCoefficient(ref coef, reader.ReadBit(), p1, m1);
+                    else if (--run < 0) break;
+                    k++;
+                }
+
+                if (value != 0)
+                {
+                    if (k > se) throw new InvalidDataException("The JPEG has a corrupt coefficient run.");
+                    coefs[offset + JpegTables.Zigzag[k]] = (short)value;
+                }
+            }
+        }
+
+        if (_eobrun > 0)
+        {
+            for (; k <= se; k++)
+            {
+                ref var coef = ref coefs[offset + JpegTables.Zigzag[k]];
+                if (coef != 0) RefineCoefficient(ref coef, reader.ReadBit(), p1, m1);
+            }
+            _eobrun--;
+        }
+    }
+
+    private static void RefineCoefficient(ref short coef, int bit, int p1, int m1)
+    {
+        if (bit != 0 && (coef & p1) == 0) coef += (short)(coef >= 0 ? p1 : m1);
+    }
+
+    /// <summary>Dequantises and inverse-transforms every block once all progressive scans have been read.</summary>
+    private void FinalizeProgressive()
+    {
+        var coefficients = new int[64];
+        foreach (var c in _components)
+        {
+            var quant = c.Quant ?? _quant[c.QuantIndex] ?? throw new InvalidDataException("The JPEG is missing a quantisation table.");
+            var natural = new int[64];
+            for (var k = 0; k < 64; k++) natural[JpegTables.Zigzag[k]] = quant[k];
+
+            c.Plane = new byte[checked(c.PlaneWidth * c.BlocksPerColumn * 8)];
+            for (var by = 0; by < c.BlocksPerColumn; by++)
+            {
+                for (var bx = 0; bx < c.BlocksPerLine; bx++)
+                {
+                    var offset = (by * c.BlocksPerLine + bx) * 64;
+                    var acPresent = false;
+                    for (var i = 0; i < 64; i++)
+                    {
+                        var v = c.Coeffs[offset + i];
+                        coefficients[i] = v * natural[i];
+                        if (i > 0 && v != 0) acPresent = true;
+                    }
+                    Idct(coefficients, acPresent, c.Plane, c.PlaneWidth, bx * 8, by * 8);
+                }
+            }
+            c.Coeffs = [];
+        }
     }
 
     private static float[] BuildIdctTable()
