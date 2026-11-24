@@ -3,9 +3,9 @@ using System.Buffers.Binary;
 namespace Shan.ImageCompressor.Gif;
 
 /// <summary>
-/// Decodes the first frame of a GIF to 8-bit RGBA, on a transparent logical screen: global/local palettes, interlacing, and the
-/// transparent colour index. An animated GIF (more than one frame) is rejected with <see cref="NotSupportedException"/> so a caller
-/// can keep the original instead of silently flattening the animation to a still.
+/// Decodes a GIF to 8-bit RGBA on a transparent logical screen: global/local palettes, interlacing, and the transparent colour index.
+/// <see cref="Decode"/> reads a still and rejects an animation with <see cref="NotSupportedException"/>; <see cref="DecodeAnimation"/> reads
+/// every frame, composited with its disposal method, delay and the loop count.
 /// </summary>
 internal static class GifDecoder
 {
@@ -18,7 +18,8 @@ internal static class GifDecoder
         }
     }
 
-    private static RgbaImage DecodeCore(byte[] data, long maxPixels)
+    /// <summary>Checks the signature and logical screen, and returns the screen size, the global palette (if any) and where the blocks start.</summary>
+    private static (int Width, int Height, byte[]? Palette, int Pos) ReadHeader(byte[] data, long maxPixels)
     {
         if (data.Length < 13 || !(data.AsSpan(0, 6).SequenceEqual("GIF87a"u8) || data.AsSpan(0, 6).SequenceEqual("GIF89a"u8))) throw new InvalidDataException("Not a GIF.");
 
@@ -37,6 +38,90 @@ internal static class GifDecoder
             globalPalette = data.AsSpan(pos, size).ToArray();
             pos += size;
         }
+        return (screenWidth, screenHeight, globalPalette, pos);
+    }
+
+    /// <summary>Decodes every frame, each as the full logical screen as a viewer would show it (disposal methods and transparency applied).</summary>
+    public static GifAnimation DecodeAnimation(byte[] data, long maxPixels)
+    {
+        try { return DecodeAnimationCore(data, maxPixels); }
+        catch (Exception e) when (e is IndexOutOfRangeException or ArgumentException or OverflowException)
+        {
+            throw new InvalidDataException("The GIF data is corrupt.", e);
+        }
+    }
+
+    private static GifAnimation DecodeAnimationCore(byte[] data, long maxPixels)
+    {
+        var (screenWidth, screenHeight, globalPalette, pos) = ReadHeader(data, maxPixels);
+
+        var canvas = RgbaImage.Create(screenWidth, screenHeight);
+        var frames = new List<GifFrame>();
+        var loop = -1; // no NETSCAPE extension: play once
+        int transparentIndex = -1, delay = 0, disposal = 0;
+        FrameData? previous = null;
+        var previousDisposal = 0;
+        byte[]? beforePrevious = null; // the screen as it was before the previous frame was drawn, for disposal 3
+
+        while (pos < data.Length)
+        {
+            var block = data[pos++];
+            if (block == 0x3B) break;
+
+            if (block == 0x21)
+            {
+                if (pos >= data.Length) throw new InvalidDataException("The GIF data is truncated.");
+                var label = data[pos++];
+                if (label == 0xF9 && pos + 5 < data.Length && data[pos] >= 4) // graphic control extension: applies to the next frame only
+                {
+                    var control = data[pos + 1];
+                    disposal = (control >> 2) & 7;
+                    transparentIndex = (control & 1) != 0 ? data[pos + 4] : -1;
+                    delay = BinaryPrimitives.ReadUInt16LittleEndian(data.AsSpan(pos + 2));
+                }
+                else if (label == 0xFF && pos + 16 <= data.Length && data[pos] == 11 && data.AsSpan(pos + 1, 11).SequenceEqual("NETSCAPE2.0"u8)
+                         && data[pos + 12] >= 3 && data[pos + 13] == 1)
+                    loop = BinaryPrimitives.ReadUInt16LittleEndian(data.AsSpan(pos + 14));
+                pos = SkipSubBlocks(data, pos);
+                continue;
+            }
+
+            if (block != 0x2C) throw new InvalidDataException("The GIF contains an unknown block.");
+
+            var frame = ReadFrame(data, ref pos, screenWidth, screenHeight, globalPalette);
+
+            // the previous frame's disposal happens before this one is drawn
+            if (previous != null)
+            {
+                if (previousDisposal == 2) Clear(canvas, previous, screenWidth);
+                else if (previousDisposal == 3 && beforePrevious != null) beforePrevious.CopyTo(canvas.Pixels, 0);
+            }
+            beforePrevious = disposal == 3 ? (byte[])canvas.Pixels.Clone() : null;
+
+            if ((long)(frames.Count + 1) * screenWidth * screenHeight > maxPixels)
+                throw new InvalidDataException($"The animation has more than {maxPixels} pixels across its frames; raise MaxPixels to allow it.");
+
+            Paint(canvas, frame, screenWidth, transparentIndex);
+            frames.Add(new GifFrame(new RgbaImage(screenWidth, screenHeight, (byte[])canvas.Pixels.Clone()), delay));
+
+            previous = frame;
+            previousDisposal = disposal;
+            transparentIndex = -1; delay = 0; disposal = 0;
+        }
+
+        if (frames.Count == 0) throw new InvalidDataException("The GIF has no image data.");
+        return new GifAnimation(screenWidth, screenHeight, frames, loop);
+    }
+
+    private static void Clear(RgbaImage canvas, FrameData frame, int screenWidth)
+    {
+        for (var y = 0; y < frame.Height; y++)
+            Array.Clear(canvas.Pixels, ((frame.Top + y) * screenWidth + frame.Left) * 4, frame.Width * 4);
+    }
+
+    private static RgbaImage DecodeCore(byte[] data, long maxPixels)
+    {
+        var (screenWidth, screenHeight, globalPalette, pos) = ReadHeader(data, maxPixels);
 
         var transparentIndex = -1;
         RgbaImage? image = null;
@@ -65,7 +150,29 @@ internal static class GifDecoder
         return image ?? throw new InvalidDataException("The GIF has no image data.");
     }
 
+    /// <summary>One frame as stored: its rectangle on the screen, its palette indices (already in row order) and the palette they refer to.</summary>
+    private sealed record FrameData(int Left, int Top, int Width, int Height, byte[] Indices, byte[] Palette, int[]? RowOrder);
+
     private static RgbaImage DecodeFrame(byte[] data, ref int pos, int screenWidth, int screenHeight, byte[]? globalPalette, int transparentIndex)
+    {
+        var frame = ReadFrame(data, ref pos, screenWidth, screenHeight, globalPalette);
+        var image = RgbaImage.Create(screenWidth, screenHeight); // everything outside the frame stays transparent
+        Paint(image, frame, screenWidth, transparentIndex);
+
+        // Anything left in the stream must not be another frame, or this is an animation.
+        while (pos < data.Length)
+        {
+            var next = data[pos++];
+            if (next == 0x3B) break;
+            if (next == 0x2C) throw new NotSupportedException("Animated GIFs are not supported; only single-frame GIFs can be compressed.");
+            if (next != 0x21) throw new InvalidDataException("The GIF contains an unknown block.");
+            pos++; // extension label
+            pos = SkipSubBlocks(data, pos);
+        }
+        return image;
+    }
+
+    private static FrameData ReadFrame(byte[] data, ref int pos, int screenWidth, int screenHeight, byte[]? globalPalette)
     {
         if (pos + 9 > data.Length) throw new InvalidDataException("The GIF data is truncated.");
         int left = BinaryPrimitives.ReadUInt16LittleEndian(data.AsSpan(pos));
@@ -103,35 +210,31 @@ internal static class GifDecoder
         }
 
         var indices = Lzw(compressed.GetBuffer().AsSpan(0, (int)compressed.Length), minCodeSize, width * height);
+        return new FrameData(left, top, width, height, indices, palette, (flags & 0x40) != 0 ? InterlacedRows(height) : null);
+    }
 
-        var image = RgbaImage.Create(screenWidth, screenHeight); // everything outside the frame stays transparent
-        var interlaced = (flags & 0x40) != 0;
-        var rowOrder = interlaced ? InterlacedRows(height) : null;
-        for (var i = 0; i < width * height; i++)
+    /// <summary>Draws a frame onto the screen; pixels with the transparent index leave whatever is already there.</summary>
+    private static void Paint(RgbaImage image, FrameData frame, int screenWidth, int transparentIndex)
+    {
+        var palette = frame.Palette;
+        for (var i = 0; i < frame.Width * frame.Height; i++)
         {
-            var index = indices[i];
+            var index = frame.Indices[i];
             if (index == transparentIndex) continue;
-            var y = top + (rowOrder != null ? rowOrder[i / width] : i / width);
-            var o = (y * screenWidth + left + i % width) * 4;
+            var y = frame.Top + (frame.RowOrder != null ? frame.RowOrder[i / frame.Width] : i / frame.Width);
+            var o = (y * screenWidth + frame.Left + i % frame.Width) * 4;
             var p = index * 3;
-            if (p + 2 >= palette.Length) { image.Pixels[o + 3] = 255; continue; } // an index past the palette is opaque black
+            if (p + 2 >= palette.Length)
+            {
+                image.Pixels[o] = image.Pixels[o + 1] = image.Pixels[o + 2] = 0; // an index past the palette is opaque black
+                image.Pixels[o + 3] = 255;
+                continue;
+            }
             image.Pixels[o] = palette[p];
             image.Pixels[o + 1] = palette[p + 1];
             image.Pixels[o + 2] = palette[p + 2];
             image.Pixels[o + 3] = 255;
         }
-
-        // Anything left in the stream must not be another frame, or this is an animation.
-        while (pos < data.Length)
-        {
-            var next = data[pos++];
-            if (next == 0x3B) break;
-            if (next == 0x2C) throw new NotSupportedException("Animated GIFs are not supported; only single-frame GIFs can be compressed.");
-            if (next != 0x21) throw new InvalidDataException("The GIF contains an unknown block.");
-            pos++; // extension label
-            pos = SkipSubBlocks(data, pos);
-        }
-        return image;
     }
 
     /// <summary>For frame row r in the stored (interlaced) order, the actual row it belongs to.</summary>

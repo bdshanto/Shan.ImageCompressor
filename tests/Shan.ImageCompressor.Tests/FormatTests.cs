@@ -42,7 +42,7 @@ public class FormatTests
     }
 
     [Fact]
-    public async Task Animated_Gif_Is_Rejected_Rather_Than_Flattened_To_A_Still()
+    public async Task The_Still_Decoder_Rejects_An_Animation_And_A_Small_One_Is_Returned_Untouched()
     {
         var fixture = Fixtures.GifAnimated;
         var ex = Assert.Throws<NotSupportedException>(() => GifDecoder.Decode(fixture.File, 1_000_000));
@@ -52,8 +52,33 @@ public class FormatTests
         var small = await ImageCompressor.CompressAsync(new MemoryStream(fixture.File));
         Assert.False(small.WasCompressed);
         Assert.Equal(fixture.File, ((MemoryStream)small.Content).ToArray());
+    }
 
-        await Assert.ThrowsAsync<UnsupportedImageException>(() => ImageCompressor.CompressAsync(new MemoryStream(fixture.File), new ImageCompressionOptions { TargetSizeBytes = 1 }));
+    [Fact]
+    public async Task An_Animated_Gif_That_Needs_Compressing_Stays_An_Animated_Gif()
+    {
+        var fixture = Fixtures.GifAnimated;
+        var original = GifDecoder.DecodeAnimation(fixture.File, 1_000_000);
+        var result = await ImageCompressor.CompressAsync(new MemoryStream(fixture.File), new ImageCompressionOptions { TargetSizeBytes = 1 });
+
+        Assert.True(result.WasCompressed);
+        Assert.Equal(("image/gif", ".gif"), (result.ContentType, result.Extension));
+        var bytes = ((MemoryStream)result.Content).ToArray();
+        Assert.Equal(ImageFormat.Gif, ImageCompressor.DetectFormat(bytes));
+
+        var decoded = GifDecoder.DecodeAnimation(bytes, 1_000_000);
+        Assert.Equal(original.Frames.Count, decoded.Frames.Count);
+        Assert.Equal(original.Frames.Select(f => f.DelayCentiseconds), decoded.Frames.Select(f => f.DelayCentiseconds));
+        Assert.Equal(original.Loop, decoded.Loop);
+    }
+
+    [Theory]
+    [InlineData(OutputFormat.Jpeg, "image/jpeg")]
+    [InlineData(OutputFormat.Png, "image/png")]
+    public async Task Asking_For_A_Still_Format_Takes_The_First_Frame_Of_An_Animation(OutputFormat output, string contentType)
+    {
+        var result = await ImageCompressor.CompressAsync(new MemoryStream(Fixtures.GifAnimated.File), new ImageCompressionOptions { TargetSizeBytes = 1, Output = output });
+        Assert.Equal(contentType, result.ContentType);
     }
 
     [Theory]
