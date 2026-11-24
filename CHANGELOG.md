@@ -19,6 +19,16 @@ All notable changes are documented here. Format follows [Keep a Changelog](https
 - `ImageCompressionOptions.KeepMetadata` (default false) carries EXIF — orientation reset, since the pixels are rotated upright — and the ICC profile to JPEG and PNG output.
 - `ImageCompressionOptions.ConvertToSrgb` (default true): pixels from an embedded RGB matrix/TRC ICC profile are converted to sRGB before the profile is dropped, so Adobe RGB / Display P3 photos no longer look dull. Verified against LittleCMS.
 - `ImageCompressionOptions.MaxDegreeOfParallelism` (default 0 = all cores): resizing, colour conversion, JPEG colour conversion and DCT/quantisation now run across cores, about 1.8× faster on a 12-megapixel photo. The output is byte-identical whatever the setting; use 1 on a busy server.
+- **Animated GIF** compression. An animated GIF is decoded frame by frame (disposal methods 0–3, per-frame delays, transparency, the NETSCAPE loop count) and re-encoded as an animated GIF with one shared palette and changed-region frames. The palette steps down from 256 colours before pixels are dropped. Previously it was rejected as unsupported. Asking for `Output = Jpeg` or `Png` takes the first frame instead.
+- **WebP** input: lossy (VP8 key frames, with the alpha plane) and lossless (VP8L, all four transforms), plus ICC profile and EXIF from the extended header. Verified bit-exact against libwebp on 20 reference files. Animated WebP is rejected with `UnsupportedImageException`; there is no WebP output.
+- Editing options: `MaxWidth`/`MaxHeight` (fit inside a box, never enlarge), `Crop` (`CropRegion`), `Rotate` (`Rotation`), `FlipHorizontal`/`FlipVertical`, and `Filter` (`ResizeFilter.Box`, `Triangle`, `CatmullRom`, `Lanczos3`). They apply even to a file already under `TargetSizeBytes`, and a file the edits turn out not to change is still returned untouched. They apply to every frame of an animation.
+- JPEG decoding is faster: dequantisation and the inverse DCT run across cores with a vectorised IDCT, and chroma upsampling and colour conversion run across cores. About 20–30% less time on a 12-megapixel JPEG, with byte-identical output.
+- A runnable examples project section for each of the above.
+
+### Changed
+
+- `MaxPixels` bounds the pixels across all frames of an animated GIF, not just one frame, so a long animation cannot expand into gigabytes.
+- The default resize filter is unchanged (`Box`), so existing output is byte-identical.
 
 ## [1.1.0] - 2026-11-24
 

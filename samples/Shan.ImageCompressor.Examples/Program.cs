@@ -2,6 +2,7 @@
 // With no argument it builds a 1600x1200 test picture in memory, so nothing needs to be on disk.
 
 using Shan.ImageCompressor;
+using Shan.ImageCompressor.Examples;
 
 var outputDir = Path.Combine(Path.GetTempPath(), "Shan.ImageCompressor.Examples");
 Directory.CreateDirectory(outputDir);
@@ -45,10 +46,47 @@ Section("3. Output format");
 foreach (var format in new[] { OutputFormat.Auto, OutputFormat.Jpeg, OutputFormat.Png })
     Show($"Output = {format}", ImageCompressor.Compress(input, new ImageCompressionOptions { TargetSizeBytes = 200 * 1024, Output = format }));
 
-// 4. Metadata and colour ----------------------------------------------------------------------------------------------
+// 4. Editing ----------------------------------------------------------------------------------------------------------
+// MaxWidth/MaxHeight, Crop, Rotate and the flips change the pixels, so they apply even to a file that is already small.
+// A picture that already fits the box (and has no other edit) still comes back untouched.
+Section("4. Editing - fit a box, crop, rotate, mirror, filters");
+foreach (var (label, options) in new (string, ImageCompressionOptions)[]
+{
+    ("fit inside 800 x 800", new() { MaxWidth = 800, MaxHeight = 800 }),
+    ("crop 800 x 600 from (400, 300)", new() { Crop = new CropRegion(400, 300, 800, 600) }),
+    ("rotate 90 degrees clockwise", new() { Rotate = Rotation.Rotate90 }),
+    ("mirror left to right", new() { FlipHorizontal = true }),
+    ("crop, then fit 400 wide with Lanczos", new() { Crop = new CropRegion(0, 0, 1200, 900), MaxWidth = 400, Filter = ResizeFilter.Lanczos3 }),
+    ("already inside 5000 x 5000: not resized", new() { MaxWidth = 5000, MaxHeight = 5000 }),
+})
+{
+    try { Show(label, ImageCompressor.Compress(input, options)); }
+    catch (ArgumentOutOfRangeException) { Console.WriteLine($"  {label,-44} -> (this image is too small for that crop)"); }
+}
+
+// 5. Animated GIF -----------------------------------------------------------------------------------------------------
+// An animated GIF stays animated: every frame, its delay and the loop count are kept. The palette steps down from 256 colours
+// before pixels are dropped. (A small sample is built in, so a target of 1 byte forces the work.)
+Section("5. Animated GIF");
+var gif = Convert.FromBase64String(SampleAssets.AnimatedGif);
+Console.WriteLine($"  input: {Describe(gif)}");
+Show("TargetSizeBytes = 1: fewer colours, then smaller", ImageCompressor.Compress(gif, new ImageCompressionOptions { TargetSizeBytes = 1, MinWidth = 20 }));
+Show("keep 256 colours, resize instead", ImageCompressor.Compress(gif, new ImageCompressionOptions { TargetSizeBytes = 1, MinWidth = 20, MinQuality = 90 }));
+Show("MaxWidth = 20 (applied to every frame)", ImageCompressor.Compress(gif, new ImageCompressionOptions { MaxWidth = 20 }));
+Show("Output = Png: the first frame only", ImageCompressor.Compress(gif, new ImageCompressionOptions { TargetSizeBytes = 1, Output = OutputFormat.Png }));
+
+// 6. WebP -------------------------------------------------------------------------------------------------------------
+// Lossy and lossless stills are read (with transparency, ICC profile and EXIF). They are written as JPEG, or PNG when transparent.
+Section("6. WebP");
+var webp = Convert.FromBase64String(SampleAssets.WebP);
+Console.WriteLine($"  input: {Describe(webp)}, {webp.Length} bytes");
+Show("WebP -> JPEG", ImageCompressor.Compress(webp, new ImageCompressionOptions { TargetSizeBytes = 1, MinWidth = 16 }));
+Show("WebP -> PNG", ImageCompressor.Compress(webp, new ImageCompressionOptions { TargetSizeBytes = 1, MinWidth = 16, Output = OutputFormat.Png }));
+
+// 7. Metadata and colour ----------------------------------------------------------------------------------------------
 // By default all metadata (EXIF, GPS, XMP) is dropped, and pixels from an embedded Adobe RGB / Display P3 profile are
 // converted to sRGB first so colours survive. Both can be changed:
-Section("4. Metadata and colour");
+Section("7. Metadata and colour");
 var photo = args.Length > 0 ? input : null; // the generated BMP has no metadata, so this only shows with your own photo
 if (photo is null) Console.WriteLine("  (pass a JPEG with EXIF/ICC to see this section do something)");
 else
@@ -60,14 +98,14 @@ else
 
 // 5. Detecting a format -----------------------------------------------------------------------------------------------
 // From the bytes, never from a client-supplied content type or file name.
-Section("5. Format detection");
+Section("8. Format detection");
 Console.WriteLine($"  DetectFormat(bytes)            -> {ImageCompressor.DetectFormat(input)}");
 await using (var stream = new MemoryStream(input))
     Console.WriteLine($"  DetectFormatAsync(stream)      -> {await ImageCompressor.DetectFormatAsync(stream)}");
 Console.WriteLine($"  DetectFormat(\"hello\"u8)        -> {ImageCompressor.DetectFormat("hello"u8)}");
 
 // 6. Async, streams, cancellation and parallelism ---------------------------------------------------------------------
-Section("6. Streams, cancellation, parallelism");
+Section("9. Streams, cancellation, parallelism");
 using (var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30)))
 await using (var stream = new MemoryStream(input))
 {
@@ -80,23 +118,24 @@ await using (var stream = new MemoryStream(input))
 // 7. Handling errors ----------------------------------------------------------------------------------------------------
 // Whatever the bytes, you get a result or one of two exceptions (both derive from ImageCompressionException), and each carries
 // the detected format. A bad option throws ArgumentOutOfRangeException before any work starts.
-Section("7. Errors");
+Section("10. Errors");
 await TryAsync("not an image", () => ImageCompressor.Compress("this is not a picture"u8.ToArray()));
 await TryAsync("truncated image", () => ImageCompressor.Compress(input[..(input.Length / 3)], new ImageCompressionOptions { TargetSizeBytes = 1 }));
 await TryAsync("too many pixels", () => ImageCompressor.Compress(input, new ImageCompressionOptions { TargetSizeBytes = 1, MaxPixels = 10_000 }));
-await TryAsync("WebP (detected, not supported)", () =>
+await TryAsync("animated WebP (detected, not supported)", () =>
 {
-    var webp = new byte[100];
-    "RIFF"u8.CopyTo(webp);
-    "WEBP"u8.CopyTo(webp.AsSpan(8));
-    return ImageCompressor.Compress(webp, new ImageCompressionOptions { TargetSizeBytes = 1 });
+    var animated = new byte[100]; // a WebP container whose header says "animated"
+    "RIFF"u8.CopyTo(animated);
+    "WEBPVP8X"u8.CopyTo(animated.AsSpan(8));
+    animated[4] = 92; animated[16] = 10; animated[20] = 0x02;
+    return ImageCompressor.Compress(animated, new ImageCompressionOptions { TargetSizeBytes = 1 });
 });
 await TryAsync("bad option", () => ImageCompressor.Compress(input, new ImageCompressionOptions { ShrinkFactor = 1.5 }));
 
 // A common pattern: compress when possible, keep the original when the format is not supported.
-Section("8. Compress, or keep the original");
+Section("11. Compress, or keep the original");
 byte[] stored;
-try { stored = ((MemoryStream)ImageCompressor.Compress(new byte[] { 0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0, 0x57, 0x45, 0x42, 0x50 }.Concat(new byte[200]).ToArray(), new ImageCompressionOptions { TargetSizeBytes = 1 }).Content).ToArray(); }
+try { stored = ((MemoryStream)ImageCompressor.Compress(AnimatedWebP(), new ImageCompressionOptions { TargetSizeBytes = 1 }).Content).ToArray(); }
 catch (UnsupportedImageException e) { stored = []; Console.WriteLine($"  kept the original because {e.Format} cannot be compressed here"); }
 
 Console.WriteLine($"\nWrote the compressed files to {outputDir}");
@@ -109,8 +148,10 @@ void Section(string title) => Console.WriteLine($"\n{title}\n{new string('-', ti
 void Show(string label, CompressedImage result)
 {
     var bytes = ((MemoryStream)result.Content).ToArray();
-    Console.WriteLine($"  {label,-44} -> {bytes.Length / 1024,6} KB  {Describe(bytes),-24} {(result.WasCompressed ? "" : "(returned as-is)")}");
+    Console.WriteLine($"  {label,-44} -> {Size(bytes.Length),8}  {Describe(bytes),-24} {(result.WasCompressed ? "" : "(returned as-is)")}");
 }
+
+static string Size(int bytes) => bytes < 10 * 1024 ? $"{bytes} B" : $"{bytes / 1024} KB";
 
 void Save(CompressedImage result, string name)
 {
@@ -136,9 +177,47 @@ static string Describe(byte[] data)
         ImageFormat.Png when data.Length > 24 => (ReadInt(data, 16, bigEndian: true), ReadInt(data, 20, bigEndian: true)),
         ImageFormat.Bmp when data.Length > 26 => (ReadInt(data, 18, bigEndian: false), Math.Abs(ReadInt(data, 22, bigEndian: false))),
         ImageFormat.Jpeg => JpegSize(data),
+        ImageFormat.Gif => (data[6] | data[7] << 8, data[8] | data[9] << 8),
+        ImageFormat.WebP when data.Length > 30 && data[12] == (byte)'V' && data[15] == (byte)' ' => ((data[26] | data[27] << 8) & 0x3FFF, (data[28] | data[29] << 8) & 0x3FFF),
         _ => (0, 0)
     };
-    return w > 0 ? $"{format} {w}x{h}" : format.ToString();
+    var frames = format == ImageFormat.Gif ? $", {GifFrames(data)} frame(s)" : "";
+    return w > 0 ? $"{format} {w}x{h}{frames}" : format.ToString();
+}
+
+// An animated WebP header with no frames in it: recognised, but not something this library can decode.
+static byte[] AnimatedWebP()
+{
+    var bytes = new byte[100];
+    "RIFF"u8.CopyTo(bytes);
+    "WEBPVP8X"u8.CopyTo(bytes.AsSpan(8));
+    bytes[4] = 92; bytes[16] = 10; bytes[20] = 0x02;
+    return bytes;
+}
+
+// Counts the image descriptors of a GIF by walking its blocks.
+static int GifFrames(byte[] d)
+{
+    var pos = 13;
+    if ((d[10] & 0x80) != 0) pos += 3 * (1 << ((d[10] & 7) + 1));
+    var frames = 0;
+    while (pos < d.Length && d[pos] != 0x3B)
+    {
+        var block = d[pos++];
+        if (block == 0x21) pos++; // extension label
+        else if (block == 0x2C)
+        {
+            frames++;
+            var flags = d[pos + 8];
+            pos += 9;
+            if ((flags & 0x80) != 0) pos += 3 * (1 << ((flags & 7) + 1));
+            pos++; // LZW minimum code size
+        }
+        else break;
+        while (pos < d.Length && d[pos] != 0) pos += d[pos] + 1; // sub-blocks
+        pos++;
+    }
+    return frames;
 }
 
 static int ReadInt(byte[] d, int at, bool bigEndian) => bigEndian

@@ -31,6 +31,30 @@ public sealed class ImageCompressionOptions
     public OutputFormat Output { get; set; } = OutputFormat.Auto;
 
     /// <summary>
+    /// Fit the image inside this width, keeping its proportions; 0 (default) = no limit. Never enlarges. Unlike <see cref="TargetSizeBytes"/>
+    /// this is applied even to a file that is already small, and the image is only re-encoded when it really is wider than this.
+    /// </summary>
+    public int MaxWidth { get; set; }
+
+    /// <summary>Fit the image inside this height, keeping its proportions; 0 (default) = no limit. Works together with <see cref="MaxWidth"/>.</summary>
+    public int MaxHeight { get; set; }
+
+    /// <summary>Keep only this rectangle of the upright image (after EXIF orientation, before <see cref="Rotate"/>). Default null = the whole image.</summary>
+    public CropRegion? Crop { get; set; }
+
+    /// <summary>Turn the image clockwise after cropping. Default <see cref="Rotation.None"/>.</summary>
+    public Rotation Rotate { get; set; }
+
+    /// <summary>Mirror the image left to right, after <see cref="Rotate"/>. Default false.</summary>
+    public bool FlipHorizontal { get; set; }
+
+    /// <summary>Mirror the image top to bottom, after <see cref="Rotate"/>. Default false.</summary>
+    public bool FlipVertical { get; set; }
+
+    /// <summary>How pixels are blended when the image is made smaller. Default <see cref="ResizeFilter.Box"/>.</summary>
+    public ResizeFilter Filter { get; set; } = ResizeFilter.Box;
+
+    /// <summary>
     /// How many cores one call may use for resizing, colour conversion and JPEG encoding. Default 0 = all of them. Use 1 on a busy server
     /// that already handles many requests at once, so each call stays on one core. The output is identical whatever the setting.
     /// </summary>
@@ -49,6 +73,9 @@ public sealed class ImageCompressionOptions
     /// </summary>
     public bool ConvertToSrgb { get; set; } = true;
 
+    /// <summary>Whether any option asks for the pixels to change regardless of file size (a small file is then decoded, not returned as-is).</summary>
+    internal bool HasEdits => MaxWidth > 0 || MaxHeight > 0 || Crop != null || Rotate != Rotation.None || FlipHorizontal || FlipVertical;
+
     /// <summary>Rejects values that could never produce a sensible result (a shrink factor of 1 or more would never shrink, etc.).</summary>
     internal void Validate()
     {
@@ -59,6 +86,12 @@ public sealed class ImageCompressionOptions
         if (!(ShrinkFactor > 0 && ShrinkFactor < 1)) throw new ArgumentOutOfRangeException(nameof(ShrinkFactor), ShrinkFactor, "Must be greater than 0 and less than 1.");
         if (MaxPasses < 1) throw new ArgumentOutOfRangeException(nameof(MaxPasses), MaxPasses, "Must be at least 1.");
         if (MaxDegreeOfParallelism < 0) throw new ArgumentOutOfRangeException(nameof(MaxDegreeOfParallelism), MaxDegreeOfParallelism, "Must be 0 (all cores) or more.");
+        if (MaxWidth < 0) throw new ArgumentOutOfRangeException(nameof(MaxWidth), MaxWidth, "Must be 0 (no limit) or more.");
+        if (MaxHeight < 0) throw new ArgumentOutOfRangeException(nameof(MaxHeight), MaxHeight, "Must be 0 (no limit) or more.");
+        if (Crop is { } crop && (crop.X < 0 || crop.Y < 0 || crop.Width < 1 || crop.Height < 1))
+            throw new ArgumentOutOfRangeException(nameof(Crop), crop, "X and Y must be 0 or more, Width and Height at least 1.");
+        if (!Enum.IsDefined(Rotate)) throw new ArgumentOutOfRangeException(nameof(Rotate), Rotate, "Not a known rotation.");
+        if (!Enum.IsDefined(Filter)) throw new ArgumentOutOfRangeException(nameof(Filter), Filter, "Not a known resize filter.");
         if (!Enum.IsDefined(Output)) throw new ArgumentOutOfRangeException(nameof(Output), Output, "Not a known output format.");
         if (MaxPixels < 1) throw new ArgumentOutOfRangeException(nameof(MaxPixels), MaxPixels, "Must be at least 1.");
     }

@@ -10,13 +10,13 @@
     <PackageId>Shan.ImageCompressor</PackageId>
     <Version>2.0.0</Version>
     <Authors>Hasibul Islam Shanto</Authors>
-    <Description>Compress JPEG, PNG, GIF, BMP, TIFF, TGA, PNM and QOI images toward a target file size with zero dependencies (own codecs, including progressive and CMYK JPEG): ICC-to-sRGB colour conversion, optional EXIF/ICC preservation, EXIF auto-orient, and alpha-aware JPEG/PNG output.</Description>
-    <PackageTags>image;compression;jpeg;png;gif;bmp;tiff;tga;qoi;icc;resize;exif;no-dependencies</PackageTags>
+    <Description>Compress JPEG, PNG, GIF (animated too), WebP, BMP, TIFF, TGA, PNM and QOI images toward a target file size with zero dependencies (own codecs, including progressive and CMYK JPEG, lossy and lossless WebP): resize to a box, crop, rotate, mirror, ICC-to-sRGB colour conversion, optional EXIF/ICC preservation, EXIF auto-orient, and alpha-aware JPEG/PNG output.</Description>
+    <PackageTags>image;compression;jpeg;png;gif;animated-gif;webp;bmp;tiff;tga;qoi;icc;resize;crop;rotate;exif;no-dependencies</PackageTags>
     <Copyright>Copyright (c) 2026 Hasibul Islam Shanto</Copyright>
     <RepositoryUrl>https://github.com/bdshanto/Shan.ImageCompressor</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <PackageProjectUrl>https://github.com/bdshanto/Shan.ImageCompressor</PackageProjectUrl>
-    <PackageReleaseNotes>BREAKING: errors are now InvalidImageException / UnsupportedImageException (base ImageCompressionException). Adds TIFF, TGA, PNM, QOI and CMYK JPEG input, an Output option, KeepMetadata, and ICC-to-sRGB colour conversion. Full notes: https://github.com/bdshanto/Shan.ImageCompressor/blob/main/CHANGELOG.md</PackageReleaseNotes>
+    <PackageReleaseNotes>Adds animated GIF compression, WebP input (lossy and lossless, with alpha), MaxWidth/MaxHeight, crop, rotate, mirror and resize filters, and faster JPEG decoding. Full notes: https://github.com/bdshanto/Shan.ImageCompressor/blob/main/CHANGELOG.md</PackageReleaseNotes>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <IncludeSymbols>true</IncludeSymbols>

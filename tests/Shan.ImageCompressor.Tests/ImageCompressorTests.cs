@@ -100,11 +100,14 @@ public class ImageCompressorTests
     }
 
     [Fact]
-    public async Task Detected_But_Unsupported_Format_Is_Rejected_Only_When_It_Needs_Compressing()
+    public async Task Animated_WebP_Is_Rejected_Only_When_It_Needs_Compressing()
     {
-        var webp = new byte[5000];
+        var webp = new byte[5000]; // a WebP container flagged as animated: recognised, but not something this library decodes
         "RIFF"u8.CopyTo(webp);
-        "WEBP"u8.CopyTo(webp.AsSpan(8));
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(webp.AsSpan(4), 4992);
+        "WEBPVP8X"u8.CopyTo(webp.AsSpan(8));
+        webp[16] = 10;
+        webp[20] = 0x02;
 
         var small = await ImageCompressor.CompressAsync(new MemoryStream(webp), Target(10_000));
         Assert.False(small.WasCompressed);

@@ -20,7 +20,7 @@ public sealed class InvalidImageException : ImageCompressionException
 }
 
 /// <summary>
-/// The image is a recognised format but uses a feature this library cannot decode (WebP, an animated GIF, a CMYK-only or JPEG-compressed
+/// The image is a recognised format but uses a feature this library cannot decode (an animated WebP, a CMYK-only or JPEG-compressed
 /// TIFF, an arithmetic-coded JPEG, ...). Callers typically keep the original file when they see this.
 /// </summary>
 public sealed class UnsupportedImageException : ImageCompressionException
