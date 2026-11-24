@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: read
+  id-token: write # lets NuGet/login exchange the GitHub OIDC token for a short-lived nuget.org API key (Trusted Publishing)
 
 jobs:
   publish:
@@ -34,14 +35,18 @@ jobs:
 
       - run: dotnet pack src/Shan.ImageCompressor -c Release -o artifacts -p:ContinuousIntegrationBuild=true
 
+      # Trusted Publishing: no long-lived API key. `user` is the nuget.org profile name (not the email) that owns the
+      # trusted-publishing policy; set it as the NUGET_USER repository variable (Settings > Secrets and variables > Actions > Variables).
+      - name: Get a short-lived nuget.org API key
+        id: login
+        uses: NuGet/login@v1
+        with:
+          user: ${{ vars.NUGET_USER }}
+
       - name: Push to nuget.org
         env:
-          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+          NUGET_API_KEY: ${{ steps.login.outputs.NUGET_API_KEY }}
         run: |
-          if [ -z "$NUGET_API_KEY" ]; then
-            echo "::error::The NUGET_API_KEY repository secret is not set (Settings > Secrets and variables > Actions)."
-            exit 1
-          fi
           source=https://api.nuget.org/v3/index.json
 
           # --no-symbols: by default the push also sends the sibling .snupkg, which nuget.org rejects until the package is indexed.
