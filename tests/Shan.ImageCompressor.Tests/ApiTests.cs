@@ -82,4 +82,16 @@ public class ApiTests
         var ex = Assert.Throws<ArgumentOutOfRangeException>(() => ImageCompressor.Compress(TestImages.NoisyPng(8, false).ToArray(), options));
         Assert.Equal(nameof(ImageCompressionOptions.MaxDegreeOfParallelism), ex.ParamName);
     }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void MinWidth_Is_A_Floor_The_Shrink_Lands_On_Exactly(bool transparent)
+    {
+        var png = TestImages.NoisyPng(800, transparent).ToArray();
+        var result = ImageCompressor.Compress(png, new ImageCompressionOptions { TargetSizeBytes = 1, MinWidth = 500 });
+        var bytes = ((MemoryStream)result.Content).ToArray();
+        var width = transparent ? Png.PngDecoder.Decode(bytes, 10_000_000).Width : Jpeg.JpegDecoder.Decode(bytes, 10_000_000, out _).Width;
+        Assert.Equal(500, width);
+    }
 }

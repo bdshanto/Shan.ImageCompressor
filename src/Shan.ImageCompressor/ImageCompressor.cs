@@ -188,8 +188,10 @@ public static class ImageCompressor
             if (!keepAlpha && quality > options.MinQuality) quality = Math.Max(options.MinQuality, quality - 10);
             else
             {
-                width = Math.Max(1, (int)(width * options.ShrinkFactor));
-                height = Math.Max(1, (int)(height * options.ShrinkFactor));
+                // never step below MinWidth: the last step lands exactly on it, keeping the aspect ratio
+                var nextWidth = Math.Max(Math.Min(options.MinWidth, width), Math.Max(1, (int)(width * options.ShrinkFactor)));
+                height = Math.Max(1, (int)Math.Round(height * (nextWidth / (double)width)));
+                width = nextWidth;
             }
         }
     }
