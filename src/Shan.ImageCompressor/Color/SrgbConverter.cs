@@ -91,8 +91,15 @@ internal sealed class SrgbConverter
     /// <summary>Converts <paramref name="pixels"/> (RGBA, 4 bytes per pixel) in place.</summary>
     public void Apply(byte[] pixels)
     {
-        var span = pixels.AsSpan();
-        for (var i = 0; i + 3 < span.Length; i += 4) Convert(span.Slice(i, 4));
+        const int RowPixels = 4096;
+        var rows = (pixels.Length / 4 + RowPixels - 1) / RowPixels;
+        Work.Rows(rows, row =>
+        {
+            var start = row * RowPixels * 4;
+            var end = Math.Min(pixels.Length - 3, start + RowPixels * 4);
+            var span = pixels.AsSpan();
+            for (var i = start; i < end; i += 4) Convert(span.Slice(i, 4));
+        });
     }
 
     private void Convert(Span<byte> px)

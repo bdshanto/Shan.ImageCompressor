@@ -63,4 +63,23 @@ public class ApiTests
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
             ImageCompressor.CompressAsync(TestImages.NoisyPng(200, false), new ImageCompressionOptions { TargetSizeBytes = 1 }, cts.Token));
     }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Parallelism_Never_Changes_The_Output(bool transparent)
+    {
+        var png = TestImages.NoisyPng(600, transparent).ToArray();
+        var single = ImageCompressor.Compress(png, new ImageCompressionOptions { TargetSizeBytes = 60 * 1024, MaxDegreeOfParallelism = 1 });
+        var many = ImageCompressor.Compress(png, new ImageCompressionOptions { TargetSizeBytes = 60 * 1024, MaxDegreeOfParallelism = 0 });
+        Assert.Equal(((MemoryStream)single.Content).ToArray(), ((MemoryStream)many.Content).ToArray());
+    }
+
+    [Fact]
+    public void A_Negative_Degree_Of_Parallelism_Is_Rejected()
+    {
+        var options = new ImageCompressionOptions { MaxDegreeOfParallelism = -1 };
+        var ex = Assert.Throws<ArgumentOutOfRangeException>(() => ImageCompressor.Compress(TestImages.NoisyPng(8, false).ToArray(), options));
+        Assert.Equal(nameof(ImageCompressionOptions.MaxDegreeOfParallelism), ex.ParamName);
+    }
 }

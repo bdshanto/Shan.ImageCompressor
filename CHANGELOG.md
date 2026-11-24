@@ -14,6 +14,7 @@ All notable changes are documented here. Format follows [Keep a Changelog](https
 - `ImageCompressionOptions.Output` (`Auto`/`Jpeg`/`Png`) to choose the output format; forcing JPEG flattens transparency onto white.
 - `ImageCompressionOptions.KeepMetadata` (default false) carries EXIF — orientation reset, since the pixels are rotated upright — and the ICC profile to JPEG and PNG output.
 - `ImageCompressionOptions.ConvertToSrgb` (default true): pixels from an embedded RGB matrix/TRC ICC profile are converted to sRGB before the profile is dropped, so Adobe RGB / Display P3 photos no longer look dull. Verified against LittleCMS.
+- `ImageCompressionOptions.MaxDegreeOfParallelism` (default 0 = all cores): resizing, colour conversion, JPEG colour conversion and DCT/quantisation now run across cores, about 1.8× faster on a 12-megapixel photo. The output is byte-identical whatever the setting; use 1 on a busy server.
 
 ## [1.1.0] - 2026-11-24
 

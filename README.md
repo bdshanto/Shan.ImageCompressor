@@ -44,6 +44,7 @@ new ImageCompressionOptions
     Output = OutputFormat.Auto,   // Auto: JPEG, or PNG when there is real transparency. Or force Jpeg (flattened on white) / Png
     KeepMetadata = false,         // true: carry EXIF (orientation reset) and, if not converted, the ICC profile to the output
     ConvertToSrgb = true,         // convert pixels from an embedded matrix/TRC RGB profile (Adobe RGB, Display P3, ...) to sRGB
+    MaxDegreeOfParallelism = 0,   // 0: use every core for resizing, colour conversion and JPEG encoding; 1 keeps a call on one core
 }
 ```
 

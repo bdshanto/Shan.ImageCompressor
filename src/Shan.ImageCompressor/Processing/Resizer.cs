@@ -34,7 +34,7 @@ internal static class Resizer
                 weights[i][j - start] = (float)(Math.Min(hi, j + 1) - Math.Max(lo, j));
         }
 
-        for (var y = 0; y < rows; y++)
+        Work.Rows(rows, y =>
         {
             var rowStart = y * width * 4;
             var outStart = y * newWidth * 4;
@@ -63,16 +63,24 @@ internal static class Resizer
                 }
                 dst[o + 3] = (byte)(a / total + 0.5f);
             }
-        }
+        });
         return dst;
     }
 
     private static byte[] Transpose(byte[] src, int width, int height)
     {
         var dst = new byte[src.Length];
-        for (var y = 0; y < height; y++)
-            for (var x = 0; x < width; x++)
-                Buffer.BlockCopy(src, (y * width + x) * 4, dst, (x * height + y) * 4, 4);
+        const int Tile = 32; // blocked so both the reads and the writes stay in cache
+        var tilesY = (height + Tile - 1) / Tile;
+        Work.Rows(tilesY, ty =>
+        {
+            var from = System.Runtime.InteropServices.MemoryMarshal.Cast<byte, uint>(src.AsSpan());
+            var to = System.Runtime.InteropServices.MemoryMarshal.Cast<byte, uint>(dst.AsSpan());
+            for (var x0 = 0; x0 < width; x0 += Tile)
+                for (var y = ty * Tile; y < Math.Min(height, ty * Tile + Tile); y++)
+                    for (var x = x0; x < Math.Min(width, x0 + Tile); x++)
+                        to[x * height + y] = from[y * width + x];
+        });
         return dst;
     }
 }

@@ -49,9 +49,14 @@ internal static class JpegEncoder
         var output = new MemoryStream();
         WriteHeaders(output, image.Width, image.Height, subsample, lumaQuant, chromaQuant, metadata);
 
+        // The DCT and quantisation of every block are independent, so they run across cores; only the Huffman stage is sequential.
+        var yBlocksX = planeW / 8;
+        var cBlocksX = chromaW / 8;
+        var yCoefs = Quantise(yPlane, planeW, planeH, lumaInverse);
+        var cbCoefs = Quantise(cbPlane, chromaW, chromaH, chromaInverse);
+        var crCoefs = Quantise(crPlane, chromaW, chromaH, chromaInverse);
+
         var bits = new JpegBitWriter(output);
-        var block = new float[64];
-        var zigzag = new int[64];
         int predY = 0, predCb = 0, predCr = 0;
 
         for (var my = 0; my < mcusY; my++)
@@ -62,13 +67,13 @@ internal static class JpegEncoder
                 {
                     for (var by = 0; by < 2; by++)
                         for (var bx = 0; bx < 2; bx++)
-                            EncodeBlock(yPlane, planeW, mx * 16 + bx * 8, my * 16 + by * 8, lumaInverse, block, zigzag, ref predY, dcLuma, acLuma, bits);
+                            EmitBlock(yCoefs, ((my * 2 + by) * yBlocksX + mx * 2 + bx) * 64, ref predY, dcLuma, acLuma, bits);
                 }
-                else EncodeBlock(yPlane, planeW, mx * 8, my * 8, lumaInverse, block, zigzag, ref predY, dcLuma, acLuma, bits);
+                else EmitBlock(yCoefs, (my * yBlocksX + mx) * 64, ref predY, dcLuma, acLuma, bits);
 
                 // One chroma block per MCU either way: an 8×8 block covers a 16×16 luma area when subsampled, 8×8 otherwise.
-                EncodeBlock(cbPlane, chromaW, mx * 8, my * 8, chromaInverse, block, zigzag, ref predCb, dcChroma, acChroma, bits);
-                EncodeBlock(crPlane, chromaW, mx * 8, my * 8, chromaInverse, block, zigzag, ref predCr, dcChroma, acChroma, bits);
+                EmitBlock(cbCoefs, (my * cBlocksX + mx) * 64, ref predCb, dcChroma, acChroma, bits);
+                EmitBlock(crCoefs, (my * cBlocksX + mx) * 64, ref predCr, dcChroma, acChroma, bits);
             }
         }
 
@@ -86,7 +91,7 @@ internal static class JpegEncoder
         var px = image.Pixels;
         var step = subsample ? 2 : 1;
 
-        for (var cy = 0; cy < chromaH; cy++)
+        Work.Rows(chromaH, cy =>
         {
             for (var cx = 0; cx < chromaW; cx++)
             {
@@ -109,7 +114,7 @@ internal static class JpegEncoder
                 cbPlane[cy * chromaW + cx] = ClampByte(cbSum / n);
                 crPlane[cy * chromaW + cx] = ClampByte(crSum / n);
             }
-        }
+        });
     }
 
     /// <summary>Composites a straight-alpha channel over white, since JPEG has nowhere to keep alpha.</summary>
@@ -203,23 +208,40 @@ internal static class JpegEncoder
         o.Write(values);
     }
 
-    private static void EncodeBlock(byte[] plane, int stride, int x0, int y0, float[] inverseQuant, float[] block, int[] zigzag, ref int pred,
-        HuffmanEncodeTable dc, HuffmanEncodeTable ac, JpegBitWriter bits)
+    /// <summary>DCT and quantise every 8×8 block of a plane; coefficients are stored per block, 64 shorts each, in zigzag order.</summary>
+    private static short[] Quantise(byte[] plane, int width, int height, float[] inverseQuant)
     {
-        for (var y = 0; y < 8; y++)
-            for (var x = 0; x < 8; x++)
-                block[y * 8 + x] = plane[(y0 + y) * stride + x0 + x] - 128;
-
-        for (var row = 0; row < 8; row++) Dct(block, row * 8, 1);
-        for (var col = 0; col < 8; col++) Dct(block, col, 8);
-
-        for (var k = 0; k < 64; k++)
+        var blocksX = width / 8;
+        var blocksY = height / 8;
+        var result = new short[blocksX * blocksY * 64];
+        Work.Rows(blocksY, () => new float[64], (by, block) =>
         {
-            var n = JpegTables.Zigzag[k];
-            var v = block[n] * inverseQuant[n];
-            zigzag[k] = (int)(v < 0 ? v - 0.5f : v + 0.5f);
-        }
+            for (var bx = 0; bx < blocksX; bx++)
+            {
+                var x0 = bx * 8;
+                var y0 = by * 8;
+                for (var y = 0; y < 8; y++)
+                    for (var x = 0; x < 8; x++)
+                        block[y * 8 + x] = plane[(y0 + y) * width + x0 + x] - 128;
 
+                for (var row = 0; row < 8; row++) Dct(block, row * 8, 1);
+                for (var col = 0; col < 8; col++) Dct(block, col, 8);
+
+                var offset = (by * blocksX + bx) * 64;
+                for (var k = 0; k < 64; k++)
+                {
+                    var n = JpegTables.Zigzag[k];
+                    var v = block[n] * inverseQuant[n];
+                    result[offset + k] = (short)(int)(v < 0 ? v - 0.5f : v + 0.5f);
+                }
+            }
+        });
+        return result;
+    }
+
+    private static void EmitBlock(short[] coefficients, int offset, ref int pred, HuffmanEncodeTable dc, HuffmanEncodeTable ac, JpegBitWriter bits)
+    {
+        var zigzag = coefficients.AsSpan(offset, 64);
         var diff = zigzag[0] - pred;
         pred = zigzag[0];
         var category = Category(diff);

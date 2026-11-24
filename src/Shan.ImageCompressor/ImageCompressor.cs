@@ -86,6 +86,7 @@ public static class ImageCompressor
     private static CompressedImage CompressCore(byte[] data, ImageCompressionOptions options, CancellationToken ct)
     {
         var format = ImageFormatDetector.Detect(data);
+        using var scope = Work.Use(options.MaxDegreeOfParallelism);
         try { return CompressCore(data, format, options, ct); }
         catch (InvalidDataException e) { throw new InvalidImageException(e.Message, format, e); }
         catch (NotSupportedException e) { throw new UnsupportedImageException(e.Message, format, e); }

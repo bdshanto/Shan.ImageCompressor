@@ -31,6 +31,12 @@ public sealed class ImageCompressionOptions
     public OutputFormat Output { get; set; } = OutputFormat.Auto;
 
     /// <summary>
+    /// How many cores one call may use for resizing, colour conversion and JPEG encoding. Default 0 = all of them. Use 1 on a busy server
+    /// that already handles many requests at once, so each call stays on one core. The output is identical whatever the setting.
+    /// </summary>
+    public int MaxDegreeOfParallelism { get; set; }
+
+    /// <summary>
     /// Carry the source's EXIF (camera, date, GPS, ...) and — when it is not converted to sRGB — its ICC colour profile to the output.
     /// Default false: metadata is dropped, which is what you want for user uploads (it removes GPS locations). The orientation tag is
     /// always reset, because the pixels are rotated upright. Has no effect on an image that is already small enough and returned as-is.
@@ -52,6 +58,7 @@ public sealed class ImageCompressionOptions
         if (MinWidth < 1) throw new ArgumentOutOfRangeException(nameof(MinWidth), MinWidth, "Must be at least 1.");
         if (!(ShrinkFactor > 0 && ShrinkFactor < 1)) throw new ArgumentOutOfRangeException(nameof(ShrinkFactor), ShrinkFactor, "Must be greater than 0 and less than 1.");
         if (MaxPasses < 1) throw new ArgumentOutOfRangeException(nameof(MaxPasses), MaxPasses, "Must be at least 1.");
+        if (MaxDegreeOfParallelism < 0) throw new ArgumentOutOfRangeException(nameof(MaxDegreeOfParallelism), MaxDegreeOfParallelism, "Must be 0 (all cores) or more.");
         if (!Enum.IsDefined(Output)) throw new ArgumentOutOfRangeException(nameof(Output), Output, "Not a known output format.");
         if (MaxPixels < 1) throw new ArgumentOutOfRangeException(nameof(MaxPixels), MaxPixels, "Must be at least 1.");
     }
