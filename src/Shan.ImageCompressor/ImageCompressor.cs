@@ -49,7 +49,7 @@ public static class ImageCompressor
     /// <exception cref="ArgumentNullException"><paramref name="content"/> is null.</exception>
     /// <exception cref="ArgumentOutOfRangeException">An option has an unusable value (see <see cref="ImageCompressionOptions"/>).</exception>
     /// <exception cref="InvalidDataException">The stream is not an image, or is corrupt or over <see cref="ImageCompressionOptions.MaxPixels"/>.</exception>
-    /// <exception cref="NotSupportedException">The image needs compressing but is not a JPEG (baseline or progressive), PNG, single-frame GIF or BMP (e.g. WebP, animated GIF, CMYK or arithmetic-coded JPEG).</exception>
+    /// <exception cref="NotSupportedException">The image needs compressing but is not a supported format (e.g. an animated WebP, an arithmetic-coded JPEG or a JPEG-compressed TIFF).</exception>
     public static async Task<CompressedImage> CompressAsync(Stream content, ImageCompressionOptions? options = null, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(content);

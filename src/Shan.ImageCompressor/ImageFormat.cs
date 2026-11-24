@@ -30,6 +30,6 @@ public enum ImageFormat
     /// <summary>QOI ("Quite OK Image").</summary>
     Qoi,
 
-    /// <summary>WebP. Detected only — returned as-is when small, rejected when it would need compressing.</summary>
+    /// <summary>WebP: lossy and lossless stills are decoded; an animated WebP is rejected when it would need compressing.</summary>
     WebP
 }
