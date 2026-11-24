@@ -1,10 +1,12 @@
+using Shan.ImageCompressor.Bmp;
+using Shan.ImageCompressor.Gif;
 using Shan.ImageCompressor.Jpeg;
 using Shan.ImageCompressor.Png;
 using Shan.ImageCompressor.Processing;
 
 namespace Shan.ImageCompressor;
 
-/// <summary>Detects and compresses JPEG and PNG images using only this library's own codecs — no third-party imaging dependency.</summary>
+/// <summary>Detects and compresses JPEG, PNG, GIF and BMP images using only this library's own codecs — no third-party imaging dependency.</summary>
 public static class ImageCompressor
 {
     /// <summary>
@@ -38,17 +40,46 @@ public static class ImageCompressor
     /// since JPEG would drop the alpha channel. EXIF orientation is applied and all metadata (EXIF/GPS/XMP/IPTC) is dropped.
     /// The input stream is read from its current position (position 0 when seekable) and not disposed.
     /// </summary>
+    /// <exception cref="ArgumentNullException"><paramref name="content"/> is null.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">An option has an unusable value (see <see cref="ImageCompressionOptions"/>).</exception>
     /// <exception cref="InvalidDataException">The stream is not an image, or is corrupt or over <see cref="ImageCompressionOptions.MaxPixels"/>.</exception>
-    /// <exception cref="NotSupportedException">The image needs compressing but is not a baseline JPEG or a PNG (e.g. progressive JPEG, WebP, GIF).</exception>
+    /// <exception cref="NotSupportedException">The image needs compressing but is not a JPEG (baseline or progressive), PNG, single-frame GIF or BMP (e.g. WebP, animated GIF, CMYK or arithmetic-coded JPEG).</exception>
     public static async Task<CompressedImage> CompressAsync(Stream content, ImageCompressionOptions? options = null, CancellationToken ct = default)
     {
+        ArgumentNullException.ThrowIfNull(content);
         options ??= new ImageCompressionOptions();
+        options.Validate();
         if (content.CanSeek) content.Position = 0;
 
         var buffer = new MemoryStream();
         await content.CopyToAsync(buffer, ct);
-        var data = buffer.ToArray();
+        return CompressCore(buffer.ToArray(), options, ct);
+    }
 
+    /// <summary>Synchronous version of <see cref="CompressAsync"/>, for callers that are not async. Same behaviour and exceptions.</summary>
+    public static CompressedImage Compress(Stream content, ImageCompressionOptions? options = null)
+    {
+        ArgumentNullException.ThrowIfNull(content);
+        options ??= new ImageCompressionOptions();
+        options.Validate();
+        if (content.CanSeek) content.Position = 0;
+
+        var buffer = new MemoryStream();
+        content.CopyTo(buffer);
+        return CompressCore(buffer.ToArray(), options, CancellationToken.None);
+    }
+
+    /// <summary>Compresses an image held in memory. Same behaviour and exceptions as <see cref="CompressAsync"/>.</summary>
+    public static CompressedImage Compress(byte[] content, ImageCompressionOptions? options = null)
+    {
+        ArgumentNullException.ThrowIfNull(content);
+        options ??= new ImageCompressionOptions();
+        options.Validate();
+        return CompressCore(content, options, CancellationToken.None);
+    }
+
+    private static CompressedImage CompressCore(byte[] data, ImageCompressionOptions options, CancellationToken ct)
+    {
         var format = ImageFormatDetector.Detect(data);
         if (format == ImageFormat.Unknown) throw new InvalidDataException("The stream is not a recognised image.");
 
@@ -65,12 +96,18 @@ public static class ImageCompressor
                 original = JpegDecoder.Decode(data, options.MaxPixels, out var orientation);
                 original = Orienter.Apply(original, orientation);
                 break;
+            case ImageFormat.Gif:
+                original = GifDecoder.Decode(data, options.MaxPixels);
+                break;
+            case ImageFormat.Bmp:
+                original = BmpDecoder.Decode(data, options.MaxPixels);
+                break;
             default:
-                throw new NotSupportedException($"A {format} image can be detected but not compressed; only JPEG and PNG are supported.");
+                throw new NotSupportedException($"A {format} image can be detected but not compressed; only JPEG, PNG, GIF and BMP are supported.");
         }
         data = [];
 
-        var keepAlpha = format == ImageFormat.Png && original.HasTransparency();
+        var keepAlpha = original.HasTransparency();
         var quality = options.InitialQuality;
         var width = original.Width;
         var height = original.Height;
@@ -95,7 +132,7 @@ public static class ImageCompressor
                     : new CompressedImage(output, "image/jpeg", ".jpg", true);
             }
 
-            await output.DisposeAsync();
+            output.Dispose();
             if (!keepAlpha && quality > options.MinQuality) quality = Math.Max(options.MinQuality, quality - 10);
             else
             {

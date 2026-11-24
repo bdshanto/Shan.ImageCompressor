@@ -6,7 +6,7 @@ public enum ImageFormat
     /// <summary>Not an image this library recognises.</summary>
     Unknown = 0,
 
-    /// <summary>JPEG. Detected and compressible (baseline only).</summary>
+    /// <summary>JPEG. Detected and compressible (baseline and progressive; not CMYK or arithmetic-coded).</summary>
     Jpeg,
 
     /// <summary>PNG. Detected and compressible.</summary>

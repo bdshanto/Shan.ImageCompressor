@@ -1,6 +1,6 @@
 namespace Shan.ImageCompressor;
 
-/// <summary>Tuning for <see cref="ImageCompressor.CompressAsync"/>. The defaults suit web-bound uploads.</summary>
+/// <summary>Tuning for <see cref="ImageCompressor.CompressAsync"/> and the synchronous <c>Compress</c> overloads. The defaults suit web-bound uploads.</summary>
 public sealed class ImageCompressionOptions
 {
     /// <summary>An image at or below this size is returned untouched. Default 768 KB.</summary>
@@ -26,4 +26,16 @@ public sealed class ImageCompressionOptions
     /// allocated. A decoded image takes 4 bytes per pixel, so this bounds memory against decompression bombs. Default 50 million.
     /// </summary>
     public long MaxPixels { get; set; } = 50_000_000;
+
+    /// <summary>Rejects values that could never produce a sensible result (a shrink factor of 1 or more would never shrink, etc.).</summary>
+    internal void Validate()
+    {
+        if (TargetSizeBytes < 1) throw new ArgumentOutOfRangeException(nameof(TargetSizeBytes), TargetSizeBytes, "Must be at least 1.");
+        if (InitialQuality is < 1 or > 100) throw new ArgumentOutOfRangeException(nameof(InitialQuality), InitialQuality, "Must be between 1 and 100.");
+        if (MinQuality is < 1 or > 100) throw new ArgumentOutOfRangeException(nameof(MinQuality), MinQuality, "Must be between 1 and 100.");
+        if (MinWidth < 1) throw new ArgumentOutOfRangeException(nameof(MinWidth), MinWidth, "Must be at least 1.");
+        if (!(ShrinkFactor > 0 && ShrinkFactor < 1)) throw new ArgumentOutOfRangeException(nameof(ShrinkFactor), ShrinkFactor, "Must be greater than 0 and less than 1.");
+        if (MaxPasses < 1) throw new ArgumentOutOfRangeException(nameof(MaxPasses), MaxPasses, "Must be at least 1.");
+        if (MaxPixels < 1) throw new ArgumentOutOfRangeException(nameof(MaxPixels), MaxPixels, "Must be at least 1.");
+    }
 }
