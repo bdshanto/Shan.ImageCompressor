@@ -1,0 +1,71 @@
+name: Publish to NuGet
+
+# Releases are cut by pushing a version tag, e.g.:  git tag v1.0.0 && git push origin v1.0.0
+on:
+  push:
+    tags: ['v*.*.*']
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+
+      - name: Check the tag matches the package version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          version=$(sed -n 's:.*<Version>\(.*\)</Version>.*:\1:p' src/Shan.ImageCompressor/Shan.ImageCompressor.csproj)
+          echo "tag=$tag csproj=$version"
+          if [ "$tag" != "$version" ]; then
+            echo "::error::Tag v$tag does not match <Version>$version</Version> in the csproj. Bump the version (and CHANGELOG) first."
+            exit 1
+          fi
+
+      - run: dotnet test tests/Shan.ImageCompressor.Tests -c Release
+
+      - run: dotnet pack src/Shan.ImageCompressor -c Release -o artifacts -p:ContinuousIntegrationBuild=true
+
+      - name: Push to nuget.org
+        env:
+          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+        run: |
+          if [ -z "$NUGET_API_KEY" ]; then
+            echo "::error::The NUGET_API_KEY repository secret is not set (Settings > Secrets and variables > Actions)."
+            exit 1
+          fi
+          source=https://api.nuget.org/v3/index.json
+
+          # --no-symbols: by default the push also sends the sibling .snupkg, which nuget.org rejects until the package is indexed.
+          dotnet nuget push "artifacts/*.nupkg" --api-key "$NUGET_API_KEY" --source "$source" --skip-duplicate --no-symbols
+
+          # nuget.org validates the package before listing it; symbols can only follow once it is visible (usually a few minutes).
+          id=shan.imagecompressor
+          version="${GITHUB_REF_NAME#v}"
+          for attempt in $(seq 1 40); do
+            if curl -fsS "https://api.nuget.org/v3-flatcontainer/$id/index.json" | grep -q "\"$version\""; then
+              echo "Package is indexed (attempt $attempt)."
+              break
+            fi
+            if [ "$attempt" = 40 ]; then
+              echo "::error::$id $version was pushed but is not indexed after 20 minutes; push the .snupkg manually once it appears."
+              exit 1
+            fi
+            echo "Waiting for nuget.org to index $id $version (attempt $attempt)..."
+            sleep 30
+          done
+
+          dotnet nuget push "artifacts/*.snupkg" --api-key "$NUGET_API_KEY" --source "$source" --skip-duplicate
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nuget
+          path: artifacts/*
