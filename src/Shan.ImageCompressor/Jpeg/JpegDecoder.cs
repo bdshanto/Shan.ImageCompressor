@@ -1,0 +1,398 @@
+using System.Buffers.Binary;
+
+namespace Shan.ImageCompressor.Jpeg;
+
+/// <summary>
+/// Decodes baseline / extended-sequential, 8-bit, Huffman-coded JPEGs (grayscale or 3-component YCbCr/RGB, any chroma subsampling,
+/// restart intervals, interleaved or per-component scans). Progressive, lossless, arithmetic-coded and CMYK files are rejected.
+/// </summary>
+internal sealed class JpegDecoder
+{
+    private sealed class Component
+    {
+        public int Id;
+        public int H;
+        public int V;
+        public int QuantIndex;
+        public int BlocksPerLine;   // padded to whole MCUs
+        public int BlocksPerColumn; // padded to whole MCUs
+        public int Width;           // actual sample width of this component
+        public int Height;
+        public byte[] Plane = [];
+        public int PlaneWidth;
+        public int DcTable;
+        public int AcTable;
+        public int Pred;
+    }
+
+    private static readonly float[] IdctTable = BuildIdctTable();
+
+    private readonly byte[] _data;
+    private readonly long _maxPixels;
+    private readonly int[]?[] _quant = new int[4][];
+    private readonly JpegHuffmanTable?[] _dc = new JpegHuffmanTable[4];
+    private readonly JpegHuffmanTable?[] _ac = new JpegHuffmanTable[4];
+    private Component[] _components = [];
+    private int _width;
+    private int _height;
+    private int _hMax;
+    private int _vMax;
+    private int _mcusX;
+    private int _mcusY;
+    private int _restartInterval;
+    private int _adobeTransform = -1;
+    private bool _scanned;
+    private int _orientation = 1;
+    private bool _orientationRead;
+    private int _pos;
+
+    private JpegDecoder(byte[] data, long maxPixels)
+    {
+        _data = data;
+        _maxPixels = maxPixels;
+    }
+
+    /// <summary>Decodes <paramref name="data"/> to RGBA. <paramref name="orientation"/> is the EXIF orientation (1–8); the pixels are NOT rotated.</summary>
+    public static RgbaImage Decode(byte[] data, long maxPixels, out int orientation)
+    {
+        var decoder = new JpegDecoder(data, maxPixels);
+        try
+        {
+            var image = decoder.DecodeCore();
+            orientation = decoder._orientation;
+            return image;
+        }
+        catch (Exception e) when (e is IndexOutOfRangeException or ArgumentException or OverflowException)
+        {
+            throw new InvalidDataException("The JPEG data is corrupt.", e);
+        }
+    }
+
+    private RgbaImage DecodeCore()
+    {
+        if (_data.Length < 4 || _data[0] != 0xFF || _data[1] != 0xD8) throw new InvalidDataException("Not a JPEG.");
+        _pos = 2;
+
+        while (_pos < _data.Length)
+        {
+            if (_data[_pos] != 0xFF) { _pos++; continue; }
+            while (_pos < _data.Length && _data[_pos] == 0xFF) _pos++;
+            if (_pos >= _data.Length) break;
+            var marker = _data[_pos++];
+
+            if (marker == 0x00 || marker == 0x01 || marker == 0xD8 || marker is >= 0xD0 and <= 0xD7) continue;
+            if (marker == 0xD9) break;
+
+            if (_pos + 2 > _data.Length) throw new InvalidDataException("The JPEG data is truncated.");
+            var length = BinaryPrimitives.ReadUInt16BigEndian(_data.AsSpan(_pos));
+            if (length < 2 || _pos + length > _data.Length) throw new InvalidDataException("The JPEG data is truncated.");
+            var body = _data.AsSpan(_pos + 2, length - 2);
+
+            switch (marker)
+            {
+                case 0xC0 or 0xC1: ReadFrame(body); break;
+                case 0xC2: throw new NotSupportedException("Progressive JPEGs are not supported.");
+                case 0xC3 or 0xC5 or 0xC6 or 0xC7 or 0xC9 or 0xCA or 0xCB or 0xCD or 0xCE or 0xCF:
+                    throw new NotSupportedException("This JPEG coding process (lossless, hierarchical or arithmetic) is not supported.");
+                case 0xC4: ReadHuffmanTables(body); break;
+                case 0xDB: ReadQuantTables(body); break;
+                case 0xDD: _restartInterval = BinaryPrimitives.ReadUInt16BigEndian(body); break;
+                case 0xE1:
+                    if (!_orientationRead) { _orientation = ExifOrientation.Read(body); _orientationRead = true; }
+                    break;
+                case 0xEE:
+                    if (body.Length >= 12 && body[..5].SequenceEqual("Adobe"u8)) _adobeTransform = body[11];
+                    break;
+                case 0xDA:
+                    _pos += length;
+                    DecodeScan(body);
+                    continue;
+            }
+            _pos += length;
+        }
+
+        if (_components.Length == 0 || !_scanned) throw new InvalidDataException("The JPEG has no image data.");
+        return BuildImage();
+    }
+
+    private void ReadFrame(ReadOnlySpan<byte> body)
+    {
+        if (_components.Length != 0) throw new InvalidDataException("The JPEG has more than one frame.");
+        if (body.Length < 6) throw new InvalidDataException("The JPEG frame header is truncated.");
+        if (body[0] != 8) throw new NotSupportedException("Only 8-bit JPEGs are supported.");
+
+        _height = BinaryPrimitives.ReadUInt16BigEndian(body[1..]);
+        _width = BinaryPrimitives.ReadUInt16BigEndian(body[3..]);
+        var count = body[5];
+        if (_width == 0 || _height == 0) throw new InvalidDataException("The JPEG has invalid dimensions.");
+        if ((long)_width * _height > _maxPixels) throw new InvalidDataException($"The image has {(long)_width * _height} pixels, over the {_maxPixels} limit.");
+        if (count is not (1 or 3)) throw new NotSupportedException("Only grayscale and 3-component JPEGs are supported.");
+        if (body.Length < 6 + count * 3) throw new InvalidDataException("The JPEG frame header is truncated.");
+
+        var components = new Component[count];
+        for (var i = 0; i < count; i++)
+        {
+            var c = new Component { Id = body[6 + i * 3], H = body[7 + i * 3] >> 4, V = body[7 + i * 3] & 15, QuantIndex = body[8 + i * 3] };
+            if (c.H is < 1 or > 4 || c.V is < 1 or > 4 || c.QuantIndex > 3) throw new InvalidDataException("The JPEG has an invalid component definition.");
+            components[i] = c;
+        }
+
+        _hMax = components.Max(c => c.H);
+        _vMax = components.Max(c => c.V);
+        _mcusX = (_width + 8 * _hMax - 1) / (8 * _hMax);
+        _mcusY = (_height + 8 * _vMax - 1) / (8 * _vMax);
+
+        foreach (var c in components)
+        {
+            c.BlocksPerLine = _mcusX * c.H;
+            c.BlocksPerColumn = _mcusY * c.V;
+            c.Width = (_width * c.H + _hMax - 1) / _hMax;
+            c.Height = (_height * c.V + _vMax - 1) / _vMax;
+            c.PlaneWidth = c.BlocksPerLine * 8;
+            c.Plane = new byte[checked(c.PlaneWidth * c.BlocksPerColumn * 8)];
+        }
+        _components = components;
+    }
+
+    private void ReadQuantTables(ReadOnlySpan<byte> body)
+    {
+        var i = 0;
+        while (i < body.Length)
+        {
+            var precision = body[i] >> 4;
+            var id = body[i] & 15;
+            i++;
+            if (id > 3) throw new InvalidDataException("The JPEG has an invalid quantisation table id.");
+            var table = new int[64];
+            for (var k = 0; k < 64; k++)
+            {
+                table[k] = precision == 0 ? body[i] : BinaryPrimitives.ReadUInt16BigEndian(body[i..]);
+                i += precision == 0 ? 1 : 2;
+            }
+            _quant[id] = table; // stored in zigzag order, exactly as in the file
+        }
+    }
+
+    private void ReadHuffmanTables(ReadOnlySpan<byte> body)
+    {
+        var i = 0;
+        while (i + 17 <= body.Length)
+        {
+            var kind = body[i] >> 4;
+            var id = body[i] & 15;
+            var counts = body.Slice(i + 1, 16);
+            var total = 0;
+            foreach (var n in counts) total += n;
+            i += 17;
+            if (id > 3 || kind > 1 || total > 256 || i + total > body.Length) throw new InvalidDataException("The JPEG has an invalid Huffman table.");
+
+            var table = new JpegHuffmanTable(counts, body.Slice(i, total).ToArray());
+            if (kind == 0) _dc[id] = table; else _ac[id] = table;
+            i += total;
+        }
+    }
+
+    private void DecodeScan(ReadOnlySpan<byte> header)
+    {
+        if (_components.Length == 0) throw new InvalidDataException("The JPEG scan appears before its frame header.");
+        var count = header[0];
+        if (count < 1 || count > _components.Length || header.Length < 1 + count * 2) throw new InvalidDataException("The JPEG scan header is invalid.");
+
+        var scan = new Component[count];
+        for (var i = 0; i < count; i++)
+        {
+            var id = header[1 + i * 2];
+            var c = _components.FirstOrDefault(x => x.Id == id) ?? throw new InvalidDataException("The JPEG scan refers to an unknown component.");
+            c.DcTable = header[2 + i * 2] >> 4;
+            c.AcTable = header[2 + i * 2] & 15;
+            if (c.DcTable > 3 || c.AcTable > 3) throw new InvalidDataException("The JPEG scan refers to an invalid Huffman table.");
+            scan[i] = c;
+        }
+
+        var reader = new JpegBitReader(_data, _pos);
+        var coefficients = new int[64];
+        foreach (var c in scan) c.Pred = 0;
+
+        int totalMcus, blocksAcross = 0;
+        if (count == 1)
+        {
+            blocksAcross = (scan[0].Width + 7) / 8;
+            totalMcus = blocksAcross * ((scan[0].Height + 7) / 8);
+        }
+        else totalMcus = _mcusX * _mcusY;
+
+        for (var mcu = 0; mcu < totalMcus; mcu++)
+        {
+            if (_restartInterval > 0 && mcu > 0 && mcu % _restartInterval == 0)
+            {
+                reader.Restart();
+                foreach (var c in scan) c.Pred = 0;
+            }
+
+            if (count == 1)
+                DecodeBlock(reader, scan[0], mcu % blocksAcross, mcu / blocksAcross, coefficients);
+            else
+            {
+                var mx = mcu % _mcusX;
+                var my = mcu / _mcusX;
+                foreach (var c in scan)
+                    for (var v = 0; v < c.V; v++)
+                        for (var h = 0; h < c.H; h++)
+                            DecodeBlock(reader, c, mx * c.H + h, my * c.V + v, coefficients);
+            }
+        }
+
+        _pos = reader.Position;
+        _scanned = true;
+    }
+
+    private void DecodeBlock(JpegBitReader reader, Component c, int blockX, int blockY, int[] coefficients)
+    {
+        var dc = _dc[c.DcTable] ?? throw new InvalidDataException("The JPEG is missing a Huffman table.");
+        var ac = _ac[c.AcTable] ?? throw new InvalidDataException("The JPEG is missing a Huffman table.");
+        var quant = _quant[c.QuantIndex] ?? throw new InvalidDataException("The JPEG is missing a quantisation table.");
+
+        Array.Clear(coefficients);
+        c.Pred += reader.ReceiveExtend(reader.Decode(dc));
+        coefficients[0] = c.Pred * quant[0];
+
+        var acPresent = false;
+        for (var k = 1; k < 64;)
+        {
+            var rs = reader.Decode(ac);
+            var run = rs >> 4;
+            var size = rs & 15;
+            if (size == 0)
+            {
+                if (run != 15) break;
+                k += 16;
+                continue;
+            }
+            k += run;
+            if (k > 63) throw new InvalidDataException("The JPEG has a corrupt coefficient run.");
+            coefficients[JpegTables.Zigzag[k]] = reader.ReceiveExtend(size) * quant[k];
+            acPresent = true;
+            k++;
+        }
+
+        Idct(coefficients, acPresent, c.Plane, c.PlaneWidth, blockX * 8, blockY * 8);
+    }
+
+    private static float[] BuildIdctTable()
+    {
+        var table = new float[64]; // [frequency u][sample x]
+        for (var u = 0; u < 8; u++)
+            for (var x = 0; x < 8; x++)
+                table[u * 8 + x] = (float)((u == 0 ? Math.Sqrt(0.125) : 0.5) * Math.Cos((2 * x + 1) * u * Math.PI / 16));
+        return table;
+    }
+
+    private static void Idct(int[] coefficients, bool acPresent, byte[] plane, int stride, int x0, int y0)
+    {
+        if (!acPresent)
+        {
+            var flat = ClampByte(coefficients[0] / 8f + 128f);
+            for (var y = 0; y < 8; y++)
+                Array.Fill(plane, flat, (y0 + y) * stride + x0, 8);
+            return;
+        }
+
+        Span<float> temp = stackalloc float[64];
+        for (var v = 0; v < 8; v++) // horizontal pass: every row of coefficients → samples along x
+        {
+            for (var x = 0; x < 8; x++)
+            {
+                float sum = 0;
+                for (var u = 0; u < 8; u++)
+                {
+                    var c = coefficients[v * 8 + u];
+                    if (c != 0) sum += IdctTable[u * 8 + x] * c;
+                }
+                temp[v * 8 + x] = sum;
+            }
+        }
+
+        for (var x = 0; x < 8; x++) // vertical pass
+        {
+            for (var y = 0; y < 8; y++)
+            {
+                float sum = 0;
+                for (var v = 0; v < 8; v++) sum += IdctTable[v * 8 + y] * temp[v * 8 + x];
+                plane[(y0 + y) * stride + x0 + x] = ClampByte(sum + 128f);
+            }
+        }
+    }
+
+    private static byte ClampByte(float v) => v <= 0 ? (byte)0 : v >= 255f ? (byte)255 : (byte)(v + 0.5f);
+
+    private RgbaImage BuildImage()
+    {
+        var image = RgbaImage.Create(_width, _height);
+        var pixels = image.Pixels;
+        var planes = _components.Select(Upsample).ToArray();
+        var rgb = _components.Length == 3 && _adobeTransform == 0;
+
+        for (var i = 0; i < _width * _height; i++)
+        {
+            var o = i * 4;
+            if (planes.Length == 1) pixels[o] = pixels[o + 1] = pixels[o + 2] = planes[0][i];
+            else
+            {
+                float a = planes[0][i], b = planes[1][i], c = planes[2][i];
+                if (rgb) { pixels[o] = (byte)a; pixels[o + 1] = (byte)b; pixels[o + 2] = (byte)c; }
+                else
+                {
+                    pixels[o] = ClampByte(a + 1.402f * (c - 128f));
+                    pixels[o + 1] = ClampByte(a - 0.344136f * (b - 128f) - 0.714136f * (c - 128f));
+                    pixels[o + 2] = ClampByte(a + 1.772f * (b - 128f));
+                }
+            }
+            pixels[o + 3] = 255;
+        }
+        return image;
+    }
+
+    /// <summary>
+    /// A component's samples at full image size. A subsampled component is interpolated linearly between sample centres
+    /// (the "fancy upsampling" libjpeg uses), so chroma edges stay smooth instead of blocky.
+    /// </summary>
+    private byte[] Upsample(Component c)
+    {
+        var result = new byte[_width * _height];
+        var (x0, x1, xw) = Taps(_width, c.H, _hMax, c.Width);
+        var (y0, y1, yw) = Taps(_height, c.V, _vMax, c.Height);
+
+        for (var y = 0; y < _height; y++)
+        {
+            var rowA = y0[y] * c.PlaneWidth;
+            var rowB = y1[y] * c.PlaneWidth;
+            var wy = yw[y];
+            for (var x = 0; x < _width; x++)
+            {
+                var wx = xw[x];
+                var top = c.Plane[rowA + x0[x]] * (256 - wx) + c.Plane[rowA + x1[x]] * wx;
+                var bottom = c.Plane[rowB + x0[x]] * (256 - wx) + c.Plane[rowB + x1[x]] * wx;
+                result[y * _width + x] = (byte)((top * (256 - wy) + bottom * wy + 32768) >> 16);
+            }
+        }
+        return result;
+    }
+
+    /// <summary>For each output position: the two neighbouring source samples and the weight (0–256) of the second.</summary>
+    private static (int[] First, int[] Second, int[] Weight) Taps(int outputLength, int factor, int maxFactor, int sourceLength)
+    {
+        var first = new int[outputLength];
+        var second = new int[outputLength];
+        var weight = new int[outputLength];
+        for (var i = 0; i < outputLength; i++)
+        {
+            if (factor == maxFactor) { first[i] = second[i] = i; continue; }
+            var position = (i + 0.5) * factor / maxFactor - 0.5; // source coordinate of this output pixel's centre
+            var a = (int)Math.Floor(position);
+            first[i] = Math.Clamp(a, 0, sourceLength - 1);
+            second[i] = Math.Clamp(a + 1, 0, sourceLength - 1);
+            weight[i] = (int)Math.Round((position - a) * 256);
+        }
+        return (first, second, weight);
+    }
+}
