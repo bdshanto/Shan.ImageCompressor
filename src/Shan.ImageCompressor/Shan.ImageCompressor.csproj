@@ -12,6 +12,11 @@
     <Authors>Hasibul Islam Shanto</Authors>
     <Description>Compress JPEG and PNG images toward a target file size with zero dependencies (own PNG and JPEG codecs): format sniffing from the bytes, EXIF auto-orient, metadata stripping, and alpha-aware JPEG/PNG output.</Description>
     <PackageTags>image;compression;jpeg;png;resize;exif;no-dependencies</PackageTags>
+    <Copyright>Copyright (c) 2026 Hasibul Islam Shanto</Copyright>
+    <RepositoryUrl>https://github.com/bdshanto/Shan.ImageCompressor</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageProjectUrl>https://github.com/bdshanto/Shan.ImageCompressor</PackageProjectUrl>
+    <PackageReleaseNotes>Initial release. Compresses JPEG and PNG images toward a target file size with no package dependencies (own PNG and baseline JPEG codecs). Detects the real format from the bytes, applies EXIF orientation and drops metadata, keeps transparent images as PNG and turns opaque ones into JPEG. Progressive/CMYK JPEG, WebP, GIF and BMP are detected but not compressed. Full notes: https://github.com/bdshanto/Shan.ImageCompressor/blob/main/CHANGELOG.md</PackageReleaseNotes>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <IncludeSymbols>true</IncludeSymbols>
