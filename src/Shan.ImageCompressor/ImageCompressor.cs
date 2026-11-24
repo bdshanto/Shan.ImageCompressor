@@ -1,8 +1,13 @@
 using Shan.ImageCompressor.Bmp;
+using Shan.ImageCompressor.Color;
 using Shan.ImageCompressor.Gif;
 using Shan.ImageCompressor.Jpeg;
+using Shan.ImageCompressor.Pnm;
 using Shan.ImageCompressor.Png;
 using Shan.ImageCompressor.Processing;
+using Shan.ImageCompressor.Qoi;
+using Shan.ImageCompressor.Tga;
+using Shan.ImageCompressor.Tiff;
 
 namespace Shan.ImageCompressor;
 
@@ -18,7 +23,7 @@ public static class ImageCompressor
         content.Position = 0;
         try
         {
-            var header = new byte[16];
+            var header = new byte[32];
             var read = 0;
             while (read < header.Length)
             {
@@ -26,7 +31,7 @@ public static class ImageCompressor
                 if (n == 0) break;
                 read += n;
             }
-            return ImageFormatDetector.Detect(header.AsSpan(0, read));
+            return ImageFormatDetector.Detect(header.AsSpan(0, read), content.Length);
         }
         finally { content.Position = 0; }
     }
@@ -81,20 +86,36 @@ public static class ImageCompressor
     private static CompressedImage CompressCore(byte[] data, ImageCompressionOptions options, CancellationToken ct)
     {
         var format = ImageFormatDetector.Detect(data);
+        try { return CompressCore(data, format, options, ct); }
+        catch (InvalidDataException e) { throw new InvalidImageException(e.Message, format, e); }
+        catch (NotSupportedException e) { throw new UnsupportedImageException(e.Message, format, e); }
+    }
+
+    /// <summary>EXIF with its orientation reset, plus the ICC profile unless the pixels were converted away from it (or it is not an RGB profile).</summary>
+    private static ImageMetadata? BuildOutputMetadata(ImageMetadata? source, bool converted)
+    {
+        if (source == null) return null;
+        var exif = source.Exif == null ? null : ExifOrientation.Normalize(source.Exif);
+        var icc = !converted && source.IccProfile != null && SrgbConverter.ColorSpace(source.IccProfile) == "RGB " ? source.IccProfile : null;
+        return exif == null && icc == null ? null : new ImageMetadata(exif, icc);
+    }
+
+    private static CompressedImage CompressCore(byte[] data, ImageFormat format, ImageCompressionOptions options, CancellationToken ct)
+    {
         if (format == ImageFormat.Unknown) throw new InvalidDataException("The stream is not a recognised image.");
 
         if (data.Length <= options.TargetSizeBytes)
             return new CompressedImage(new MemoryStream(data), ImageFormatDetector.ContentType(format), ImageFormatDetector.Extension(format), false);
 
         RgbaImage original;
+        var orientation = 1;
         switch (format)
         {
             case ImageFormat.Png:
                 original = PngDecoder.Decode(data, options.MaxPixels);
                 break;
             case ImageFormat.Jpeg:
-                original = JpegDecoder.Decode(data, options.MaxPixels, out var orientation);
-                original = Orienter.Apply(original, orientation);
+                original = JpegDecoder.Decode(data, options.MaxPixels, out orientation);
                 break;
             case ImageFormat.Gif:
                 original = GifDecoder.Decode(data, options.MaxPixels);
@@ -102,12 +123,42 @@ public static class ImageCompressor
             case ImageFormat.Bmp:
                 original = BmpDecoder.Decode(data, options.MaxPixels);
                 break;
+            case ImageFormat.Tiff:
+                original = TiffDecoder.Decode(data, options.MaxPixels, out orientation);
+                break;
+            case ImageFormat.Tga:
+                original = TgaDecoder.Decode(data, options.MaxPixels);
+                break;
+            case ImageFormat.Pnm:
+                original = PnmDecoder.Decode(data, options.MaxPixels);
+                break;
+            case ImageFormat.Qoi:
+                original = QoiDecoder.Decode(data, options.MaxPixels);
+                break;
             default:
-                throw new NotSupportedException($"A {format} image can be detected but not compressed; only JPEG, PNG, GIF and BMP are supported.");
+                throw new NotSupportedException($"A {format} image can be detected but not compressed; only JPEG, PNG, GIF, BMP, TIFF, TGA, PNM and QOI are supported.");
         }
         data = [];
 
-        var keepAlpha = original.HasTransparency();
+        // Colour: bring an embedded RGB profile's pixels to sRGB, so dropping the profile does not shift colours.
+        var source = original.Metadata;
+        var converted = false;
+        if (options.ConvertToSrgb && source?.IccProfile is { } profile && SrgbConverter.TryCreate(profile) is { } converter)
+        {
+            converter.Apply(original.Pixels);
+            converted = true;
+        }
+        var metadata = options.KeepMetadata ? BuildOutputMetadata(source, converted) : null;
+        var exifOrientation = orientation;
+        original = Orienter.Apply(original, exifOrientation);
+
+        var keepAlpha = options.Output switch
+        {
+            OutputFormat.Png => true,
+            OutputFormat.Jpeg => false,
+            _ => original.HasTransparency()
+        };
+        if (!keepAlpha) original = original.HasTransparency() ? original.FlattenOnWhite() : original;
         var quality = options.InitialQuality;
         var width = original.Width;
         var height = original.Height;
@@ -122,7 +173,7 @@ public static class ImageCompressor
         {
             ct.ThrowIfCancellationRequested();
             var current = Resizer.Shrink(original, width, height);
-            var output = keepAlpha ? PngEncoder.Encode(current) : JpegEncoder.Encode(current, quality);
+            var output = keepAlpha ? PngEncoder.Encode(current, metadata) : JpegEncoder.Encode(current, quality, metadata);
 
             var smallest = keepAlpha ? width <= options.MinWidth : quality <= options.MinQuality && width <= options.MinWidth;
             if (output.Length <= options.TargetSizeBytes || smallest || pass >= options.MaxPasses)

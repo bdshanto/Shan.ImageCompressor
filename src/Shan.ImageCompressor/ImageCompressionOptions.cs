@@ -27,6 +27,22 @@ public sealed class ImageCompressionOptions
     /// </summary>
     public long MaxPixels { get; set; } = 50_000_000;
 
+    /// <summary>Which format a compressed image is written in. Default <see cref="OutputFormat.Auto"/>.</summary>
+    public OutputFormat Output { get; set; } = OutputFormat.Auto;
+
+    /// <summary>
+    /// Carry the source's EXIF (camera, date, GPS, ...) and — when it is not converted to sRGB — its ICC colour profile to the output.
+    /// Default false: metadata is dropped, which is what you want for user uploads (it removes GPS locations). The orientation tag is
+    /// always reset, because the pixels are rotated upright. Has no effect on an image that is already small enough and returned as-is.
+    /// </summary>
+    public bool KeepMetadata { get; set; }
+
+    /// <summary>
+    /// Convert pixels from an embedded RGB matrix/TRC ICC profile (Adobe RGB, Display P3, ProPhoto, camera profiles) to sRGB, so the
+    /// colours stay right once the profile is dropped. Default true. Lookup-table (e.g. CMYK) profiles are not converted.
+    /// </summary>
+    public bool ConvertToSrgb { get; set; } = true;
+
     /// <summary>Rejects values that could never produce a sensible result (a shrink factor of 1 or more would never shrink, etc.).</summary>
     internal void Validate()
     {
@@ -36,6 +52,7 @@ public sealed class ImageCompressionOptions
         if (MinWidth < 1) throw new ArgumentOutOfRangeException(nameof(MinWidth), MinWidth, "Must be at least 1.");
         if (!(ShrinkFactor > 0 && ShrinkFactor < 1)) throw new ArgumentOutOfRangeException(nameof(ShrinkFactor), ShrinkFactor, "Must be greater than 0 and less than 1.");
         if (MaxPasses < 1) throw new ArgumentOutOfRangeException(nameof(MaxPasses), MaxPasses, "Must be at least 1.");
+        if (!Enum.IsDefined(Output)) throw new ArgumentOutOfRangeException(nameof(Output), Output, "Not a known output format.");
         if (MaxPixels < 1) throw new ArgumentOutOfRangeException(nameof(MaxPixels), MaxPixels, "Must be at least 1.");
     }
 }
