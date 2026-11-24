@@ -1,6 +1,6 @@
 namespace Shan.ImageCompressor.Tests;
 
-/// <summary>Hostile and sloppy input: whatever the bytes, the only acceptable outcomes are a result, InvalidDataException or NotSupportedException.</summary>
+/// <summary>Hostile and sloppy input: whatever the bytes, the only acceptable outcomes are a result, InvalidImageException or UnsupportedImageException.</summary>
 public class RobustnessTests
 {
     private static readonly string[] AllFixtures = typeof(Fixtures).GetFields()
@@ -41,7 +41,7 @@ public class RobustnessTests
     {
         var fixture = Fixtures.Get(name);
         var limit = (long)fixture.Width * fixture.Height - 1;
-        var ex = Assert.Throws<InvalidDataException>(() => ImageCompressor.Compress(fixture.File, new ImageCompressionOptions { TargetSizeBytes = 1, MaxPixels = limit }));
+        var ex = Assert.Throws<InvalidImageException>(() => ImageCompressor.Compress(fixture.File, new ImageCompressionOptions { TargetSizeBytes = 1, MaxPixels = limit }));
         Assert.Contains("limit", ex.Message);
     }
 
@@ -57,14 +57,14 @@ public class RobustnessTests
         BitConverter.GetBytes(100_000).CopyTo(bmp, 22);
         BitConverter.GetBytes((short)1).CopyTo(bmp, 26);
         BitConverter.GetBytes((short)24).CopyTo(bmp, 28);
-        Assert.Throws<InvalidDataException>(() => ImageCompressor.Compress(bmp, new ImageCompressionOptions { TargetSizeBytes = 1 }));
+        Assert.Throws<InvalidImageException>(() => ImageCompressor.Compress(bmp, new ImageCompressionOptions { TargetSizeBytes = 1 }));
     }
 
     [Fact]
     public void Not_An_Image_Is_Invalid_Data()
     {
-        Assert.Throws<InvalidDataException>(() => ImageCompressor.Compress("this is plain text, not a picture"u8.ToArray()));
-        Assert.Throws<InvalidDataException>(() => ImageCompressor.Compress([]));
+        Assert.Throws<InvalidImageException>(() => ImageCompressor.Compress("this is plain text, not a picture"u8.ToArray()));
+        Assert.Throws<InvalidImageException>(() => ImageCompressor.Compress([]));
     }
 
     private static void AssertCleanOutcome(byte[] bytes, string name, int trial)
@@ -73,7 +73,7 @@ public class RobustnessTests
         {
             using var result = ImageCompressor.Compress(bytes, Strict).Content;
         }
-        catch (Exception e) when (e is InvalidDataException or NotSupportedException) { }
+        catch (ImageCompressionException) { }
         catch (Exception e)
         {
             throw new Xunit.Sdk.XunitException($"{name} (trial {trial}) threw {e.GetType().Name}: {e.Message}\n{e.StackTrace}");

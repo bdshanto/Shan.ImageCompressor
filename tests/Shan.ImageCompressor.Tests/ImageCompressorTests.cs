@@ -89,14 +89,14 @@ public class ImageCompressorTests
     public async Task Non_Image_Throws_InvalidData()
     {
         using var input = new MemoryStream("not an image"u8.ToArray());
-        await Assert.ThrowsAsync<InvalidDataException>(() => ImageCompressor.CompressAsync(input));
+        await Assert.ThrowsAsync<InvalidImageException>(() => ImageCompressor.CompressAsync(input));
     }
 
     [Fact]
     public async Task Corrupt_Image_Throws_InvalidData()
     {
         using var input = new MemoryStream(TestImages.NoisyPng(300, false).ToArray()[..2000]);
-        await Assert.ThrowsAsync<InvalidDataException>(() => ImageCompressor.CompressAsync(input, Target(1000)));
+        await Assert.ThrowsAsync<InvalidImageException>(() => ImageCompressor.CompressAsync(input, Target(1000)));
     }
 
     [Fact]
@@ -110,7 +110,7 @@ public class ImageCompressorTests
         Assert.False(small.WasCompressed);
         Assert.Equal("image/webp", small.ContentType);
 
-        await Assert.ThrowsAsync<NotSupportedException>(() => ImageCompressor.CompressAsync(new MemoryStream(webp), Target(1000)));
+        await Assert.ThrowsAsync<UnsupportedImageException>(() => ImageCompressor.CompressAsync(new MemoryStream(webp), Target(1000)));
     }
 
     [Fact]
@@ -118,7 +118,7 @@ public class ImageCompressorTests
     {
         using var input = TestImages.NoisyPng(300, false);
         var options = new ImageCompressionOptions { TargetSizeBytes = 1000, MaxPixels = 1000 };
-        var ex = await Assert.ThrowsAsync<InvalidDataException>(() => ImageCompressor.CompressAsync(input, options));
+        var ex = await Assert.ThrowsAsync<InvalidImageException>(() => ImageCompressor.CompressAsync(input, options));
         Assert.Contains("limit", ex.Message);
     }
 

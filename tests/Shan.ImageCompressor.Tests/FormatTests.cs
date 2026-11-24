@@ -53,7 +53,7 @@ public class FormatTests
         Assert.False(small.WasCompressed);
         Assert.Equal(fixture.File, ((MemoryStream)small.Content).ToArray());
 
-        await Assert.ThrowsAsync<NotSupportedException>(() => ImageCompressor.CompressAsync(new MemoryStream(fixture.File), new ImageCompressionOptions { TargetSizeBytes = 1 }));
+        await Assert.ThrowsAsync<UnsupportedImageException>(() => ImageCompressor.CompressAsync(new MemoryStream(fixture.File), new ImageCompressionOptions { TargetSizeBytes = 1 }));
     }
 
     [Theory]
@@ -111,7 +111,7 @@ public class FormatTests
     {
         // an arithmetic-coded frame header (SOF9), not decodable here
         byte[] jpeg = [0xFF, 0xD8, 0xFF, 0xC9, 0x00, 0x0B, 8, 0, 4, 0, 4, 1, 1, 0x11, 0, 0xFF, 0xD9];
-        await Assert.ThrowsAsync<NotSupportedException>(() => ImageCompressor.CompressAsync(new MemoryStream(jpeg), new ImageCompressionOptions { TargetSizeBytes = 1 }));
+        await Assert.ThrowsAsync<UnsupportedImageException>(() => ImageCompressor.CompressAsync(new MemoryStream(jpeg), new ImageCompressionOptions { TargetSizeBytes = 1 }));
     }
 
     /// <summary>Same RGBA, except that a fully transparent pixel's colour is irrelevant.</summary>
