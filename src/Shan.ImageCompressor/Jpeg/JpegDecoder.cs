@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Runtime.Intrinsics;
 
 namespace Shan.ImageCompressor.Jpeg;
 
@@ -19,8 +20,8 @@ internal sealed class JpegDecoder
         public int Width;           // actual sample width of this component
         public int Height;
         public byte[] Plane = [];
-        public short[] Coeffs = []; // progressive only: every block's coefficients, natural order, filled in scan by scan
-        public int[]? Quant;        // progressive only: the table in force when the component's first scan arrived
+        public short[] Coeffs = []; // every block's coefficients, natural order, filled in scan by scan
+        public int[]? Quant;        // the table in force when the component's first scan arrived
         public int PlaneWidth;
         public int DcTable;
         public int AcTable;
@@ -127,7 +128,7 @@ internal sealed class JpegDecoder
         }
 
         if (_components.Length == 0 || !_scanned) throw new InvalidDataException("The JPEG has no image data.");
-        if (_progressive) FinalizeProgressive();
+        FinalizeCoefficients();
         var image = BuildImage();
         image.Metadata = BuildMetadata();
         return image;
@@ -168,8 +169,7 @@ internal sealed class JpegDecoder
             c.Width = (_width * c.H + _hMax - 1) / _hMax;
             c.Height = (_height * c.V + _vMax - 1) / _vMax;
             c.PlaneWidth = c.BlocksPerLine * 8;
-            if (progressive) c.Coeffs = new short[checked(c.BlocksPerLine * c.BlocksPerColumn * 64)];
-            else c.Plane = new byte[checked(c.PlaneWidth * c.BlocksPerColumn * 8)];
+            c.Coeffs = new short[checked(c.BlocksPerLine * c.BlocksPerColumn * 64)];
         }
         _components = components;
     }
@@ -239,11 +239,12 @@ internal sealed class JpegDecoder
             al = header[3 + count * 2] & 15;
             var validBand = ss == 0 ? se == 0 : se >= ss && se <= 63 && count == 1;
             if (!validBand || al > 13) throw new InvalidDataException("The JPEG progressive scan parameters are invalid.");
-            foreach (var c in scan) c.Quant ??= _quant[c.QuantIndex];
         }
 
+        foreach (var c in scan) c.Quant ??= _quant[c.QuantIndex];
+        if (!_progressive && scan.Any(c => c.Quant == null)) throw new InvalidDataException("The JPEG is missing a quantisation table.");
+
         var reader = new JpegBitReader(_data, _pos);
-        var coefficients = new int[64];
         _eobrun = 0;
         foreach (var c in scan) c.Pred = 0;
 
@@ -269,7 +270,7 @@ internal sealed class JpegDecoder
                 var bx = mcu % blocksAcross;
                 var by = mcu / blocksAcross;
                 if (_progressive) DecodeProgressiveBlock(reader, scan[0], bx, by, ss, se, ah, al);
-                else DecodeBlock(reader, scan[0], bx, by, coefficients);
+                else DecodeBlock(reader, scan[0], bx, by);
             }
             else
             {
@@ -280,7 +281,7 @@ internal sealed class JpegDecoder
                         for (var h = 0; h < c.H; h++)
                         {
                             if (_progressive) DecodeProgressiveBlock(reader, c, mx * c.H + h, my * c.V + v, ss, se, ah, al);
-                            else DecodeBlock(reader, c, mx * c.H + h, my * c.V + v, coefficients);
+                            else DecodeBlock(reader, c, mx * c.H + h, my * c.V + v);
                         }
             }
         }
@@ -289,17 +290,17 @@ internal sealed class JpegDecoder
         _scanned = true;
     }
 
-    private void DecodeBlock(JpegBitReader reader, Component c, int blockX, int blockY, int[] coefficients)
+    /// <summary>One baseline block: Huffman-decodes it into the component's coefficient store; dequantising and the IDCT happen later, in parallel.</summary>
+    private void DecodeBlock(JpegBitReader reader, Component c, int blockX, int blockY)
     {
         var dc = _dc[c.DcTable] ?? throw new InvalidDataException("The JPEG is missing a Huffman table.");
         var ac = _ac[c.AcTable] ?? throw new InvalidDataException("The JPEG is missing a Huffman table.");
-        var quant = _quant[c.QuantIndex] ?? throw new InvalidDataException("The JPEG is missing a quantisation table.");
+        var coefs = c.Coeffs;
+        var offset = (blockY * c.BlocksPerLine + blockX) * 64;
 
-        Array.Clear(coefficients);
         c.Pred += reader.ReceiveExtend(reader.Decode(dc));
-        coefficients[0] = c.Pred * quant[0];
+        coefs[offset] = (short)c.Pred;
 
-        var acPresent = false;
         for (var k = 1; k < 64;)
         {
             var rs = reader.Decode(ac);
@@ -313,12 +314,9 @@ internal sealed class JpegDecoder
             }
             k += run;
             if (k > 63) throw new InvalidDataException("The JPEG has a corrupt coefficient run.");
-            coefficients[JpegTables.Zigzag[k]] = reader.ReceiveExtend(size) * quant[k];
-            acPresent = true;
+            coefs[offset + JpegTables.Zigzag[k]] = (short)reader.ReceiveExtend(size);
             k++;
         }
-
-        Idct(coefficients, acPresent, c.Plane, c.PlaneWidth, blockX * 8, blockY * 8);
     }
 
     /// <summary>One block of one progressive scan: a DC first/refinement pass or an AC first/refinement pass over the band ss..se (ITU T.81 G.1.2).</summary>
@@ -428,18 +426,18 @@ internal sealed class JpegDecoder
         if (bit != 0 && (coef & p1) == 0) coef += (short)(coef >= 0 ? p1 : m1);
     }
 
-    /// <summary>Dequantises and inverse-transforms every block once all progressive scans have been read.</summary>
-    private void FinalizeProgressive()
+    /// <summary>Dequantises and inverse-transforms every block once all scans have been read; block rows are independent, so they run across cores.</summary>
+    private void FinalizeCoefficients()
     {
-        var coefficients = new int[64];
         foreach (var c in _components)
         {
             var quant = c.Quant ?? _quant[c.QuantIndex] ?? throw new InvalidDataException("The JPEG is missing a quantisation table.");
             var natural = new int[64];
             for (var k = 0; k < 64; k++) natural[JpegTables.Zigzag[k]] = quant[k];
 
-            c.Plane = new byte[checked(c.PlaneWidth * c.BlocksPerColumn * 8)];
-            for (var by = 0; by < c.BlocksPerColumn; by++)
+            var plane = c.Plane = new byte[checked(c.PlaneWidth * c.BlocksPerColumn * 8)];
+            var coefs = c.Coeffs;
+            Work.Rows(c.BlocksPerColumn, () => new int[64], (by, coefficients) =>
             {
                 for (var bx = 0; bx < c.BlocksPerLine; bx++)
                 {
@@ -447,13 +445,13 @@ internal sealed class JpegDecoder
                     var acPresent = false;
                     for (var i = 0; i < 64; i++)
                     {
-                        var v = c.Coeffs[offset + i];
+                        var v = coefs[offset + i];
                         coefficients[i] = v * natural[i];
                         if (i > 0 && v != 0) acPresent = true;
                     }
-                    Idct(coefficients, acPresent, c.Plane, c.PlaneWidth, bx * 8, by * 8);
+                    Idct(coefficients, acPresent, plane, c.PlaneWidth, bx * 8, by * 8);
                 }
-            }
+            });
             c.Coeffs = [];
         }
     }
@@ -477,29 +475,33 @@ internal sealed class JpegDecoder
             return;
         }
 
-        Span<float> temp = stackalloc float[64];
-        for (var v = 0; v < 8; v++) // horizontal pass: every row of coefficients → samples along x
+        // Each vector holds the eight samples of one row. Multiplies and adds stay separate (no fused multiply-add) and run in the
+        // same order as a scalar sum, so the result is bit-identical on every machine.
+        Span<Vector256<float>> temp = stackalloc Vector256<float>[8];
+        for (var v = 0; v < 8; v++) // horizontal pass: one row of coefficients → one row of samples along x
         {
-            for (var x = 0; x < 8; x++)
+            var sum = Vector256<float>.Zero;
+            for (var u = 0; u < 8; u++)
             {
-                float sum = 0;
-                for (var u = 0; u < 8; u++)
-                {
-                    var c = coefficients[v * 8 + u];
-                    if (c != 0) sum += IdctTable[u * 8 + x] * c;
-                }
-                temp[v * 8 + x] = sum;
+                var c = coefficients[v * 8 + u];
+                if (c != 0) sum += Vector256.LoadUnsafe(ref IdctTable[u * 8]) * Vector256.Create((float)c);
             }
+            temp[v] = sum;
         }
 
-        for (var x = 0; x < 8; x++) // vertical pass
+        var low = Vector256<float>.Zero;
+        var high = Vector256.Create(255f);
+        var half = Vector256.Create(0.5f);
+        var offset = Vector256.Create(128f);
+        Span<int> row = stackalloc int[8];
+        for (var y = 0; y < 8; y++) // vertical pass: sample row y is a weighted sum of the eight temp rows
         {
-            for (var y = 0; y < 8; y++)
-            {
-                float sum = 0;
-                for (var v = 0; v < 8; v++) sum += IdctTable[v * 8 + y] * temp[v * 8 + x];
-                plane[(y0 + y) * stride + x0 + x] = ClampByte(sum + 128f);
-            }
+            var sum = Vector256<float>.Zero;
+            for (var v = 0; v < 8; v++) sum += Vector256.Create(IdctTable[v * 8 + y]) * temp[v];
+            var clamped = Vector256.Min(Vector256.Max(sum + offset, low), high);
+            Vector256.ConvertToInt32(clamped + half).CopyTo(row);
+            var o = (y0 + y) * stride + x0;
+            for (var x = 0; x < 8; x++) plane[o + x] = (byte)row[x];
         }
     }
 
@@ -520,24 +522,27 @@ internal sealed class JpegDecoder
         var planes = _components.Select(Upsample).ToArray();
         var rgb = _components.Length == 3 && _adobeTransform == 0;
 
-        for (var i = 0; i < _width * _height; i++)
+        Work.Rows(_height, y =>
         {
-            var o = i * 4;
-            if (planes.Length == 4) BuildCmykPixel(pixels, o, planes, i);
-            else if (planes.Length == 1) pixels[o] = pixels[o + 1] = pixels[o + 2] = planes[0][i];
-            else
+            for (var i = y * _width; i < (y + 1) * _width; i++)
             {
-                float a = planes[0][i], b = planes[1][i], c = planes[2][i];
-                if (rgb) { pixels[o] = (byte)a; pixels[o + 1] = (byte)b; pixels[o + 2] = (byte)c; }
+                var o = i * 4;
+                if (planes.Length == 4) BuildCmykPixel(pixels, o, planes, i);
+                else if (planes.Length == 1) pixels[o] = pixels[o + 1] = pixels[o + 2] = planes[0][i];
                 else
                 {
-                    pixels[o] = ClampByte(a + 1.402f * (c - 128f));
-                    pixels[o + 1] = ClampByte(a - 0.344136f * (b - 128f) - 0.714136f * (c - 128f));
-                    pixels[o + 2] = ClampByte(a + 1.772f * (b - 128f));
+                    float a = planes[0][i], b = planes[1][i], c = planes[2][i];
+                    if (rgb) { pixels[o] = (byte)a; pixels[o + 1] = (byte)b; pixels[o + 2] = (byte)c; }
+                    else
+                    {
+                        pixels[o] = ClampByte(a + 1.402f * (c - 128f));
+                        pixels[o + 1] = ClampByte(a - 0.344136f * (b - 128f) - 0.714136f * (c - 128f));
+                        pixels[o + 2] = ClampByte(a + 1.772f * (b - 128f));
+                    }
                 }
+                pixels[o + 3] = 255;
             }
-            pixels[o + 3] = 255;
-        }
+        });
         return image;
     }
 
@@ -573,7 +578,7 @@ internal sealed class JpegDecoder
         var (x0, x1, xw) = Taps(_width, c.H, _hMax, c.Width);
         var (y0, y1, yw) = Taps(_height, c.V, _vMax, c.Height);
 
-        for (var y = 0; y < _height; y++)
+        Work.Rows(_height, y =>
         {
             var rowA = y0[y] * c.PlaneWidth;
             var rowB = y1[y] * c.PlaneWidth;
@@ -585,7 +590,7 @@ internal sealed class JpegDecoder
                 var bottom = c.Plane[rowB + x0[x]] * (256 - wx) + c.Plane[rowB + x1[x]] * wx;
                 result[y * _width + x] = (byte)((top * (256 - wy) + bottom * wy + 32768) >> 16);
             }
-        }
+        });
         return result;
     }
 
