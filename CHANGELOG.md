@@ -2,6 +2,13 @@
 
 All notable changes are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/), versioning follows SemVer.
 
+## [2.0.2] - 2026-11-25
+
+### Changed
+
+- The package now also targets `net10.0` and `net11.0`, so .NET 10 and 11 apps get a build made for them instead of falling back to the `net9.0` one. All 450 tests pass on .NET 10 and 11. The package is larger again (about 590 KB) because every target ships its own copy of the library.
+- The publish workflow installs the .NET 11 SDK, which is needed to build the `net11.0` target.
+
 ## [2.0.1] - 2026-11-25
 
 ### Changed
