@@ -51,7 +51,7 @@ internal static class PngEncoder
         }
 
         var idat = new MemoryStream();
-        using (var z = new ZLibStream(idat, CompressionLevel.SmallestSize, leaveOpen: true))
+        using (var z = new ZLibStream(idat, ZLibLevel.Smallest, leaveOpen: true))
             z.Write(raw);
 
         var output = new MemoryStream();
@@ -69,7 +69,7 @@ internal static class PngEncoder
         {
             using var profile = new MemoryStream();
             profile.Write("ICC profile\0\0"u8); // the profile's name, a NUL, then compression method 0
-            using (var z = new ZLibStream(profile, CompressionLevel.SmallestSize, leaveOpen: true)) z.Write(icc);
+            using (var z = new ZLibStream(profile, ZLibLevel.Smallest, leaveOpen: true)) z.Write(icc);
             WriteChunk(output, "iCCP"u8, profile.GetBuffer().AsSpan(0, (int)profile.Length));
         }
         if (metadata?.Exif is { Length: > 0 } exif) WriteChunk(output, "eXIf"u8, exif);

@@ -52,7 +52,7 @@ public static class ImageCompressor
     /// <exception cref="NotSupportedException">The image needs compressing but is not a supported format (e.g. an animated WebP, an arithmetic-coded JPEG or a JPEG-compressed TIFF).</exception>
     public static async Task<CompressedImage> CompressAsync(Stream content, ImageCompressionOptions? options = null, CancellationToken ct = default)
     {
-        ArgumentNullException.ThrowIfNull(content);
+        if (content is null) throw new ArgumentNullException(nameof(content));
         options ??= new ImageCompressionOptions();
         options.Validate();
         if (content.CanSeek) content.Position = 0;
@@ -65,7 +65,7 @@ public static class ImageCompressor
     /// <summary>Synchronous version of <see cref="CompressAsync"/>, for callers that are not async. Same behaviour and exceptions.</summary>
     public static CompressedImage Compress(Stream content, ImageCompressionOptions? options = null)
     {
-        ArgumentNullException.ThrowIfNull(content);
+        if (content is null) throw new ArgumentNullException(nameof(content));
         options ??= new ImageCompressionOptions();
         options.Validate();
         if (content.CanSeek) content.Position = 0;
@@ -78,7 +78,7 @@ public static class ImageCompressor
     /// <summary>Compresses an image held in memory. Same behaviour and exceptions as <see cref="CompressAsync"/>.</summary>
     public static CompressedImage Compress(byte[] content, ImageCompressionOptions? options = null)
     {
-        ArgumentNullException.ThrowIfNull(content);
+        if (content is null) throw new ArgumentNullException(nameof(content));
         options ??= new ImageCompressionOptions();
         options.Validate();
         return CompressCore(content, options, CancellationToken.None);

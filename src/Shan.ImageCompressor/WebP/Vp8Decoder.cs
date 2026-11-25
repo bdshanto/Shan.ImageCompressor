@@ -301,8 +301,8 @@ internal static class Vp8Decoder
             for (var mbY = 0; mbY < _mbHeight; mbY++)
             {
                 var tokens = _partitions[mbY & (_partitionCount - 1)];
-                Array.Clear(leftModes);
-                Array.Clear(leftNzY); Array.Clear(leftNzU); Array.Clear(leftNzV);
+                Array.Clear(leftModes, 0, leftModes.Length);
+                Array.Clear(leftNzY, 0, leftNzY.Length); Array.Clear(leftNzU, 0, leftNzU.Length); Array.Clear(leftNzV, 0, leftNzV.Length);
                 leftNzDc = 0;
 
                 for (var mbX = 0; mbX < _mbWidth; mbX++)
@@ -345,7 +345,7 @@ internal static class Vp8Decoder
                     var chromaMode = _header.GetBit(142) == 0 ? DcPred : _header.GetBit(114) == 0 ? VPred : _header.GetBit(183) != 0 ? TmPred : HPred;
 
                     // ---- residual coefficients (token partition)
-                    Array.Clear(coefficients);
+                    Array.Clear(coefficients, 0, coefficients.Length);
                     var hasCoefficients = false;
                     if (!skip)
                     {
