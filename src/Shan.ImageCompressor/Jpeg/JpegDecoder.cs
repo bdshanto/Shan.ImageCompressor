@@ -475,6 +475,7 @@ internal sealed class JpegDecoder
             return;
         }
 
+#if NET7_0_OR_GREATER
         // Each vector holds the eight samples of one row. Multiplies and adds stay separate (no fused multiply-add) and run in the
         // same order as a scalar sum, so the result is bit-identical on every machine.
         Span<Vector256<float>> temp = stackalloc Vector256<float>[8];
@@ -503,6 +504,32 @@ internal sealed class JpegDecoder
             var o = (y0 + y) * stride + x0;
             for (var x = 0; x < 8; x++) plane[o + x] = (byte)row[x];
         }
+#else
+        Span<float> temp = stackalloc float[64];
+        for (var v = 0; v < 8; v++) // horizontal pass: every row of coefficients → samples along x
+        {
+            for (var x = 0; x < 8; x++)
+            {
+                float sum = 0;
+                for (var u = 0; u < 8; u++)
+                {
+                    var c = coefficients[v * 8 + u];
+                    if (c != 0) sum += IdctTable[u * 8 + x] * c;
+                }
+                temp[v * 8 + x] = sum;
+            }
+        }
+
+        for (var x = 0; x < 8; x++) // vertical pass
+        {
+            for (var y = 0; y < 8; y++)
+            {
+                float sum = 0;
+                for (var v = 0; v < 8; v++) sum += IdctTable[v * 8 + y] * temp[v * 8 + x];
+                plane[(y0 + y) * stride + x0 + x] = ClampByte(sum + 128f);
+            }
+        }
+#endif
     }
 
     private static byte ClampByte(float v) => v <= 0 ? (byte)0 : v >= 255f ? (byte)255 : (byte)(v + 0.5f);

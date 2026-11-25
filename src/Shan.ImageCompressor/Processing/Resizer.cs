@@ -97,7 +97,7 @@ internal static class Resizer
                 w[j - start] = (float)weight;
                 sum += weight;
             }
-            if (Math.Abs(sum) < 1e-9) { Array.Clear(w); w[Math.Clamp((int)centre, start, end) - start] = 1; sum = 1; }
+            if (Math.Abs(sum) < 1e-9) { Array.Clear(w, 0, w.Length); w[Math.Clamp((int)centre, start, end) - start] = 1; sum = 1; }
             for (var j = 0; j < w.Length; j++) w[j] = (float)(w[j] / sum);
             first[i] = start;
             weights[i] = w;

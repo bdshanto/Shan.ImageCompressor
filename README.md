@@ -183,5 +183,6 @@ Output is always JPEG (baseline, 4:2:0 chroma below quality 90, 4:4:4 from 90 up
 ## Notes
 
 - Compression is CPU-bound and synchronous after the input is read; a 12-megapixel photo takes about 1–2 seconds on a multi-core machine. Run it off a request thread if that matters, and pass a `CancellationToken` to stop between passes.
+- Runs on .NET 5 through .NET 10 (the package carries builds for `net5.0` to `net9.0`, and newer apps use the newest one).
 - A decoded image takes 4 bytes per pixel. `MaxPixels` (default 50 million) caps that; lower it if you run in a small container.
 - Not a general-purpose imaging library: the edits are the ones above (resize, crop, rotate, mirror), there are no filters or drawing, and colour management is limited to converting matrix/TRC RGB profiles to sRGB.
