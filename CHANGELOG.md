@@ -29,6 +29,7 @@ All notable changes are documented here. Format follows [Keep a Changelog](https
 
 - `MaxPixels` bounds the pixels across all frames of an animated GIF, not just one frame, so a long animation cannot expand into gigabytes.
 - The default resize filter is unchanged (`Box`), so existing output is byte-identical.
+- The package now targets `net8.0` only. The `net10.0` build was identical, and a .NET 10 app uses the `net8.0` assembly as is, so the download is about half the size (about 176 KB down to about 92 KB).
 
 ## [1.1.0] - 2026-11-24
 
