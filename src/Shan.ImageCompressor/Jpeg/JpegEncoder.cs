@@ -18,23 +18,69 @@ internal static class JpegEncoder
 
     public const int MaxDimension = 65535;
 
-    public static MemoryStream Encode(RgbaImage image, int quality, ImageMetadata? metadata = null)
+    /// <summary>The colour-converted planes of one image. They depend only on the image and whether chroma is subsampled, so the quality passes of one compression share them.</summary>
+    internal sealed class Planes
+    {
+        internal Planes(int width, int height, bool subsample)
+        {
+            Width = width;
+            Height = height;
+            Subsample = subsample;
+            var mcu = subsample ? 16 : 8;
+            McusX = (width + mcu - 1) / mcu;
+            McusY = (height + mcu - 1) / mcu;
+            PlaneW = McusX * mcu;
+            PlaneH = McusY * mcu;
+            ChromaW = subsample ? PlaneW / 2 : PlaneW;
+            ChromaH = subsample ? PlaneH / 2 : PlaneH;
+            Y = new byte[PlaneW * PlaneH];
+            Cb = new byte[ChromaW * ChromaH];
+            Cr = new byte[ChromaW * ChromaH];
+        }
+
+        public int Width { get; }
+        public int Height { get; }
+        public bool Subsample { get; }
+        public int McusX { get; }
+        public int McusY { get; }
+        public int PlaneW { get; }
+        public int PlaneH { get; }
+        public int ChromaW { get; }
+        public int ChromaH { get; }
+        public byte[] Y { get; }
+        public byte[] Cb { get; }
+        public byte[] Cr { get; }
+    }
+
+    /// <summary>Whether a given quality uses 4:2:0 chroma.</summary>
+    public static bool Subsamples(int quality) => Math.Clamp(quality, 1, 100) < 90;
+
+    /// <summary>Converts an image to the planes <see cref="Encode(Planes, int, ImageMetadata?)"/> needs, for the chroma layout <paramref name="quality"/> implies.</summary>
+    public static Planes Prepare(RgbaImage image, int quality)
     {
         if (image.Width > MaxDimension || image.Height > MaxDimension) throw new NotSupportedException("JPEG cannot hold an image over 65535 pixels on a side.");
-        quality = Math.Clamp(quality, 1, 100);
-        var subsample = quality < 90;
-        var mcu = subsample ? 16 : 8;
-        var mcusX = (image.Width + mcu - 1) / mcu;
-        var mcusY = (image.Height + mcu - 1) / mcu;
-        var planeW = mcusX * mcu;
-        var planeH = mcusY * mcu;
-        var chromaW = subsample ? planeW / 2 : planeW;
-        var chromaH = subsample ? planeH / 2 : planeH;
+        var planes = new Planes(image.Width, image.Height, Subsamples(quality));
+        ConvertToYCbCr(image, planes.Subsample, planes.PlaneW, planes.ChromaW, planes.ChromaH, planes.Y, planes.Cb, planes.Cr);
+        return planes;
+    }
 
-        var yPlane = new byte[planeW * planeH];
-        var cbPlane = new byte[chromaW * chromaH];
-        var crPlane = new byte[chromaW * chromaH];
-        ConvertToYCbCr(image, subsample, planeW, chromaW, chromaH, yPlane, cbPlane, crPlane);
+    public static MemoryStream Encode(RgbaImage image, int quality, ImageMetadata? metadata = null) => Encode(Prepare(image, quality), quality, metadata);
+
+    /// <summary>Encodes prepared planes. <paramref name="planes"/> must have been made for the same chroma layout as <paramref name="quality"/>.</summary>
+    public static MemoryStream Encode(Planes planes, int quality, ImageMetadata? metadata = null)
+    {
+        quality = Math.Clamp(quality, 1, 100);
+        var subsample = planes.Subsample;
+        if (subsample != Subsamples(quality)) throw new ArgumentException("The planes were prepared for a different chroma layout.", nameof(planes));
+        var mcusX = planes.McusX;
+        var mcusY = planes.McusY;
+        var planeW = planes.PlaneW;
+        var planeH = planes.PlaneH;
+        var chromaW = planes.ChromaW;
+        var chromaH = planes.ChromaH;
+        var yPlane = planes.Y;
+        var cbPlane = planes.Cb;
+        var crPlane = planes.Cr;
 
         var lumaQuant = ScaleQuant(JpegTables.LuminanceQuant, quality);
         var chromaQuant = ScaleQuant(JpegTables.ChrominanceQuant, quality);
@@ -47,7 +93,7 @@ internal static class JpegEncoder
         var acChroma = new HuffmanEncodeTable(JpegTables.AcChrominanceCounts, JpegTables.AcChrominanceValues);
 
         var output = new MemoryStream();
-        WriteHeaders(output, image.Width, image.Height, subsample, lumaQuant, chromaQuant, metadata);
+        WriteHeaders(output, planes.Width, planes.Height, subsample, lumaQuant, chromaQuant, metadata);
 
         // The DCT and quantisation of every block are independent, so they run across cores; only the Huffman stage is sequential.
         var yBlocksX = planeW / 8;
