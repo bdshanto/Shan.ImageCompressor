@@ -2,11 +2,19 @@
 
 All notable changes are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/), versioning follows SemVer.
 
+## [2.0.2] - 2026-11-26
+
+### Changed
+
+- The package now also targets `net10.0` and `net11.0`, so .NET 10 and 11 apps get a build made for them instead of falling back to the `net9.0` one. All 450 tests pass on .NET 10 and 11.
+- The publish workflow installs the .NET 11 SDK, which is needed to build the `net11.0` target.
+- Faster compression with byte-identical output: passes that only lower JPEG quality reuse the resized image and its colour planes, the transparency scan runs once per resize, the PNG filters, CRC-32 (8 bytes per step) and JPEG bit writer are quicker, and the input is no longer copied twice.
+
 ## [2.0.1] - 2026-11-25
 
 ### Changed
 
-- The package now targets `net5.0`, `net6.0`, `net7.0`, `net8.0` and `net9.0` (2.0.0 targeted `net8.0` and `net10.0`). A .NET 10 app uses the `net9.0` build. Each target ships its own copy of the library, so the download is larger (about 418 KB).
+- The package now targets `net5.0`, `net6.0`, `net7.0`, `net8.0` and `net9.0` (2.0.0 targeted `net8.0` and `net10.0`). A .NET 10 app uses the `net9.0` build.
 - On .NET 5 and 6 the library uses small built-in stand-ins for APIs those runtimes lack: a zlib stream (.NET 5), `Stream.ReadExactly` (before .NET 7), and a scalar JPEG inverse DCT in place of the vectorised one (before .NET 7). Output is the same on every target, except that .NET 5 compresses PNG data at the framework's regular `Optimal` level rather than `SmallestSize`, so its PNG files can be a little larger.
 - Tests were run on .NET 5, 6, 7, 8, 9 and 10: all 450 pass on each.
 - The NuGet publish workflow no longer requires the tag to be on `main`.

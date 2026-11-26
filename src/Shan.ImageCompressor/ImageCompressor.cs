@@ -57,9 +57,9 @@ public static class ImageCompressor
         options.Validate();
         if (content.CanSeek) content.Position = 0;
 
-        var buffer = new MemoryStream();
+        var buffer = NewBuffer(content);
         await content.CopyToAsync(buffer, ct);
-        return CompressCore(buffer.ToArray(), options, ct);
+        return CompressCore(ToArray(buffer), options, ct);
     }
 
     /// <summary>Synchronous version of <see cref="CompressAsync"/>, for callers that are not async. Same behaviour and exceptions.</summary>
@@ -70,10 +70,22 @@ public static class ImageCompressor
         options.Validate();
         if (content.CanSeek) content.Position = 0;
 
-        var buffer = new MemoryStream();
+        var buffer = NewBuffer(content);
         content.CopyTo(buffer);
-        return CompressCore(buffer.ToArray(), options, CancellationToken.None);
+        return CompressCore(ToArray(buffer), options, CancellationToken.None);
     }
+
+    /// <summary>A buffer pre-sized to what is left of a seekable stream, so the copy does not grow it and <see cref="ToArray"/> can hand it over as is.</summary>
+    private static MemoryStream NewBuffer(Stream content)
+    {
+        if (!content.CanSeek) return new MemoryStream();
+        var remaining = content.Length - content.Position;
+        return remaining is > 0 and <= 0x7FFFFFC7 ? new MemoryStream((int)remaining) : new MemoryStream();
+    }
+
+    /// <summary>The buffer's bytes, without a copy when its backing array is exactly full.</summary>
+    private static byte[] ToArray(MemoryStream buffer) =>
+        buffer.TryGetBuffer(out var segment) && segment.Offset == 0 && segment.Array!.Length == segment.Count ? segment.Array : buffer.ToArray();
 
     /// <summary>Compresses an image held in memory. Same behaviour and exceptions as <see cref="CompressAsync"/>.</summary>
     public static CompressedImage Compress(byte[] content, ImageCompressionOptions? options = null)
@@ -236,7 +248,8 @@ public static class ImageCompressor
             OutputFormat.Jpeg => false,
             _ => original.HasTransparency()
         };
-        if (!keepAlpha) original = original.HasTransparency() ? original.FlattenOnWhite() : original;
+        // Auto without transparency has nothing to flatten, so only an explicit JPEG request needs the scan.
+        if (options.Output == OutputFormat.Jpeg && original.HasTransparency()) original = original.FlattenOnWhite();
         var quality = options.InitialQuality;
         var width = original.Width;
         var height = original.Height;
@@ -250,11 +263,28 @@ public static class ImageCompressor
             height = Math.Max(1, (int)(height * fit));
         }
 
+        RgbaImage? current = null;
+        JpegEncoder.Planes? planes = null;
+        bool currentAlpha = false;
+        int currentWidth = 0, currentHeight = 0;
         for (var pass = 1; ; pass++)
         {
             ct.ThrowIfCancellationRequested();
-            var current = Resizer.Shrink(original, width, height, options.Filter);
-            var output = keepAlpha ? PngEncoder.Encode(current, metadata) : JpegEncoder.Encode(current, quality, metadata);
+            // A quality-only pass keeps the dimensions, so the previous resize (and its scans and colour planes) is reused instead of redone.
+            if (current == null || width != currentWidth || height != currentHeight)
+            {
+                current = Resizer.Shrink(original, width, height, options.Filter);
+                (currentWidth, currentHeight) = (width, height);
+                planes = null;
+                if (keepAlpha) currentAlpha = current.HasTransparency();
+            }
+            MemoryStream output;
+            if (keepAlpha) output = PngEncoder.Encode(current, metadata, currentAlpha);
+            else
+            {
+                if (planes == null || planes.Subsample != JpegEncoder.Subsamples(quality)) planes = JpegEncoder.Prepare(current, quality);
+                output = JpegEncoder.Encode(planes, quality, metadata);
+            }
 
             var smallest = keepAlpha ? width <= options.MinWidth : quality <= options.MinQuality && width <= options.MinWidth;
             if (output.Length <= options.TargetSizeBytes || smallest || pass >= options.MaxPasses)

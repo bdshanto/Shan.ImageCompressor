@@ -6,9 +6,10 @@ namespace Shan.ImageCompressor.Png;
 /// <summary>Writes an 8-bit PNG: RGB when the image is fully opaque, RGBA otherwise, each scanline using its cheapest filter.</summary>
 internal static class PngEncoder
 {
-    public static MemoryStream Encode(RgbaImage image, ImageMetadata? metadata = null)
+    // hasAlpha: whether the image has real transparency, when the caller already knows; scanned for otherwise.
+    public static MemoryStream Encode(RgbaImage image, ImageMetadata? metadata = null, bool? hasAlpha = null)
     {
-        var alpha = image.HasTransparency();
+        var alpha = hasAlpha ?? image.HasTransparency();
         var channels = alpha ? 4 : 3;
         var stride = image.Width * channels;
 
@@ -81,19 +82,28 @@ internal static class PngEncoder
 
     private static void ApplyFilter(int filter, byte[] row, byte[] prev, byte[] output, int bpp)
     {
-        for (var i = 0; i < row.Length; i++)
+        // One loop per filter rather than a switch per byte; the first bpp bytes have no left neighbour (a = c = 0).
+        var lead = Math.Min(bpp, row.Length);
+        switch (filter)
         {
-            int a = i >= bpp ? row[i - bpp] : 0;
-            int b = prev[i];
-            int c = i >= bpp ? prev[i - bpp] : 0;
-            output[i] = filter switch
-            {
-                0 => row[i],
-                1 => (byte)(row[i] - a),
-                2 => (byte)(row[i] - b),
-                3 => (byte)(row[i] - ((a + b) >> 1)),
-                _ => (byte)(row[i] - Paeth(a, b, c))
-            };
+            case 0:
+                Buffer.BlockCopy(row, 0, output, 0, row.Length);
+                break;
+            case 1:
+                Buffer.BlockCopy(row, 0, output, 0, lead);
+                for (var i = lead; i < row.Length; i++) output[i] = (byte)(row[i] - row[i - bpp]);
+                break;
+            case 2:
+                for (var i = 0; i < row.Length; i++) output[i] = (byte)(row[i] - prev[i]);
+                break;
+            case 3:
+                for (var i = 0; i < lead; i++) output[i] = (byte)(row[i] - (prev[i] >> 1));
+                for (var i = lead; i < row.Length; i++) output[i] = (byte)(row[i] - ((row[i - bpp] + prev[i]) >> 1));
+                break;
+            default:
+                for (var i = 0; i < lead; i++) output[i] = (byte)(row[i] - Paeth(0, prev[i], 0));
+                for (var i = lead; i < row.Length; i++) output[i] = (byte)(row[i] - Paeth(row[i - bpp], prev[i], prev[i - bpp]));
+                break;
         }
     }
 
